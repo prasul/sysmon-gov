@@ -1,0 +1,20 @@
+# Binary
+sysmon
+
+# Go
+go.sum
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# GeoIP database (users download their own)
+*.mmdb
