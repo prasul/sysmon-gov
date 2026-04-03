@@ -3,6 +3,7 @@ package ui
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -70,6 +71,7 @@ type App struct {
 	ngxErrTable  *tview.Table
 	diskTable    *tview.Table
 	footer       *tview.TextView
+	attn         *AttentionBanner
 
 	// Live page panels
 	liveHeader    *tview.TextView
@@ -147,36 +149,41 @@ func (a *App) buildLayout() {
 	a.footer = styledTextView(tview.AlignCenter)
 	a.footer.SetBackgroundColor(barBg)
 
+	// ── Attention banner (Phase 2) ─────────────────────────────
+	a.attn = NewAttentionBanner()
+
 	// ── Grid ────────────────────────────────────────────────────
 	// Row 0: header               (1)
-	// Row 1: load + memory        (6)
-	// Row 2: procCPU + procMem    (flex)
-	// Row 3: ngxPaths + ngxIPs    (flex)
-	// Row 4: bots + mysql         (flex)
-	// Row 5: wpLogin + phpSlow    (flex)
-	// Row 6: wpFiles + ngxErrors  (flex)  ← NEW
-	// Row 7: disk                 (5)
-	// Row 8: footer               (1)
+	// Row 1: attention banner     (3)
+	// Row 2: load + memory        (6)
+	// Row 3: procCPU + procMem    (flex)
+	// Row 4: ngxPaths + ngxIPs    (flex)
+	// Row 5: bots + mysql         (flex)
+	// Row 6: wpLogin + phpSlow    (flex)
+	// Row 7: wpFiles + ngxErrors  (flex)
+	// Row 8: disk                 (5)
+	// Row 9: footer               (1)
 	grid := tview.NewGrid().
-		SetRows(1, 6, 0, 0, 0, 0, 0, 5, 1).
+		SetRows(1, 3, 6, 0, 0, 0, 0, 0, 5, 1).
 		SetColumns(0, 0).
 		SetBorders(false)
 
 	grid.AddItem(a.header, 0, 0, 1, 2, 0, 0, false)
-	grid.AddItem(a.loadView, 1, 0, 1, 1, 0, 0, false)
-	grid.AddItem(a.memView, 1, 1, 1, 1, 0, 0, false)
-	grid.AddItem(a.procCPUTable, 2, 0, 1, 1, 0, 0, false)
-	grid.AddItem(a.procMemTable, 2, 1, 1, 1, 0, 0, false)
-	grid.AddItem(a.ngxPathTable, 3, 0, 1, 1, 0, 0, false)
-	grid.AddItem(a.ngxIPTable, 3, 1, 1, 1, 0, 0, false)
-	grid.AddItem(a.botTable, 4, 0, 1, 1, 0, 0, false)
-	grid.AddItem(a.mysqlTable, 4, 1, 1, 1, 0, 0, false)
-	grid.AddItem(a.wpLoginTable, 5, 0, 1, 1, 0, 0, false)
-	grid.AddItem(a.phpSlowTable, 5, 1, 1, 1, 0, 0, false)
-	grid.AddItem(a.wpFilesTable, 6, 0, 1, 1, 0, 0, false) // ← NEW
-	grid.AddItem(a.ngxErrTable, 6, 1, 1, 1, 0, 0, false)  // ← NEW
-	grid.AddItem(a.diskTable, 7, 0, 1, 2, 0, 0, false)
-	grid.AddItem(a.footer, 8, 0, 1, 2, 0, 0, false)
+	grid.AddItem(a.attn.View, 1, 0, 1, 2, 0, 0, false) // ← ATTENTION BANNER
+	grid.AddItem(a.loadView, 2, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.memView, 2, 1, 1, 1, 0, 0, false)
+	grid.AddItem(a.procCPUTable, 3, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.procMemTable, 3, 1, 1, 1, 0, 0, false)
+	grid.AddItem(a.ngxPathTable, 4, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.ngxIPTable, 4, 1, 1, 1, 0, 0, false)
+	grid.AddItem(a.botTable, 5, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.mysqlTable, 5, 1, 1, 1, 0, 0, false)
+	grid.AddItem(a.wpLoginTable, 6, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.phpSlowTable, 6, 1, 1, 1, 0, 0, false)
+	grid.AddItem(a.wpFilesTable, 7, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.ngxErrTable, 7, 1, 1, 1, 0, 0, false)
+	grid.AddItem(a.diskTable, 8, 0, 1, 2, 0, 0, false)
+	grid.AddItem(a.footer, 9, 0, 1, 2, 0, 0, false)
 
 	// ── Build the live page ─────────────────────────────────────
 	liveGrid := a.buildLivePage()
@@ -347,6 +354,48 @@ func (a *App) refresh() {
 		a.renderNgxErrors(ngxErrors, errTotal)
 		a.renderDisk(disks)
 		a.renderFooter()
+
+		// ── Attention banner ────────────────────────────────
+		am := AttentionMetrics{
+			WPLoginTotal:    wpTotal,
+			PHPSlowCount:    phpTotal,
+			NginxErrorCount: errTotal,
+			FileChangeCount: fileTotal,
+			NumCPUs:         runtime.NumCPU(),
+		}
+		// Memory
+		if mem != nil {
+			am.MemPercent = mem.UsedPercent
+		}
+		// Load
+		if load != nil {
+			am.Load1m = load.Load1
+		}
+		// Disks
+		for _, d := range disks {
+			am.DiskUsages = append(am.DiskUsages, DiskUsage{
+				Mount:   d.MountPoint,
+				Percent: d.UsedPercent,
+				Total:   fmt.Sprintf("%.0fG", d.TotalGB),
+				Used:    fmt.Sprintf("%.0fG", d.UsedGB),
+			})
+		}
+		// WP-Login IPs
+		for _, h := range wpHits {
+			am.WPLoginIPs = append(am.WPLoginIPs, WPLoginEntry{
+				IP:      h.IP,
+				Hits:    h.Count,
+				Country: h.Country,
+			})
+		}
+		// MySQL
+		if mysqlStats != nil {
+			am.MySQLActive = mysqlStats.ActiveQueries
+			if len(mysqlStats.Processes) > 0 {
+				am.MySQLSlowest = float64(mysqlStats.Processes[0].TimeSec)
+			}
+		}
+		a.attn.Update(a.tviewApp, am)
 	})
 }
 
