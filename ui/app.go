@@ -72,6 +72,7 @@ type App struct {
 	diskTable    *tview.Table
 	footer       *tview.TextView
 	attn         *AttentionBanner
+	tracker      *ActionTracker
 
 	// Live page panels
 	liveHeader    *tview.TextView
@@ -89,6 +90,7 @@ func New(interval time.Duration, deps Deps) *App {
 		interval:    interval,
 		deps:        deps,
 		currentPage: pageDashboard,
+		tracker:     NewActionTracker(),
 	}
 	a.buildLayout()
 	return a
@@ -227,6 +229,19 @@ func (a *App) buildLayout() {
 				a.pages.SwitchToPage(pageLive)
 				return nil
 			}
+
+		// ── Phase 3: IP Actions & Service Controls ──────────
+		case event.Rune() == 'b' || event.Rune() == 'B':
+			ShowBlockIPForm(a.tviewApp, a.pages, a.tracker, nil)
+			return nil
+
+		case event.Rune() == 'u' || event.Rune() == 'U':
+			ShowUnblockIPForm(a.tviewApp, a.pages, a.tracker, nil)
+			return nil
+
+		case event.Rune() == ':':
+			ShowCommandPalette(a.tviewApp, a.pages, nil)
+			return nil
 		}
 		return event
 	})
@@ -872,9 +887,10 @@ func (a *App) renderDisk(disks []metrics.DiskInfo) {
 
 func (a *App) renderFooter() {
 	fmt.Fprintf(a.footer.Clear(),
-		" [%s::b]q[-:-:-] quit  [%s]│[-]  [%s::b]L[-:-:-] / [%s::b]→[-:-:-] live view  [%s]│[-]  refresh [%s::b]%s[-:-:-]  [%s]│[-]  [%s]sysmon[-]",
+		" [%s::b]q[-:-:-] quit  [%s]│[-]  [%s::b]L[-:-:-] / [%s::b]→[-:-:-] live  [%s]│[-]  [%s::b]b[-:-:-] block  [%s::b]u[-:-:-] unblock  [%s::b]:[-:-:-] services  [%s]│[-]  refresh [%s::b]%s[-:-:-]  [%s]│[-]  [%s]sysmon[-]",
 		cHex(sevYellow), cHex(textSecondary),
 		cHex(sevYellow), cHex(sevYellow), cHex(textSecondary),
+		cHex(sevRed), cHex(sevGreen), cHex(textAccent), cHex(textSecondary),
 		cHex(textAccent), a.interval,
 		cHex(textSecondary), cHex(textMuted),
 	)
