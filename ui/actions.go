@@ -186,6 +186,15 @@ func runCmd(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// runBashFunc executes a bash function (like scoots) via a login shell.
+// The command string is built from pre-validated inputs only — the IP
+// has already passed net.ParseIP validation before reaching here.
+func runBashFunc(command string) (string, error) {
+	cmd := exec.Command("bash", "-l", "-c", command)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 // ========================================================================
 //  BLOCK IP - runs both csf and scoots, then auto-restarts
 // ========================================================================
@@ -203,8 +212,8 @@ func blockIP(ip string) string {
 		results = append(results, fmt.Sprintf("[green]csf -d:[-] OK"))
 	}
 
-	// Step 2: scoots block
-	out, err = runCmd("scoots", "ip", "block", ip)
+	// Step 2: scoots block (bash function)
+	out, err = runBashFunc(fmt.Sprintf("scoots ip block %s", ip))
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots block:[-] %s (%v)", out, err))
 	} else {
@@ -220,15 +229,15 @@ func blockIP(ip string) string {
 	}
 
 	// Step 4: Auto-restart nginx
-	out, err = runCmd("nprestart")
+	out, err = runCmd("/bin/nprestart")
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]nprestart:[-] %s (%v)", out, err))
 	} else {
 		results = append(results, fmt.Sprintf("[green]nprestart:[-] OK"))
 	}
 
-	// Step 5: Auto-restart PHP-FPM
-	out, err = runCmd("scoots", "php", "restart", "all")
+	// Step 5: Auto-restart PHP-FPM (bash function)
+	out, err = runBashFunc("scoots php restart all")
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots php restart:[-] %s (%v)", out, err))
 	} else {
@@ -253,7 +262,7 @@ func unblockIP(ip string) string {
 		results = append(results, fmt.Sprintf("[green]csf -dr:[-] OK"))
 	}
 
-	out, err = runCmd("scoots", "ip", "unblock", ip)
+	out, err = runBashFunc(fmt.Sprintf("scoots ip unblock %s", ip))
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots unblock:[-] %s (%v)", out, err))
 	} else {
@@ -288,10 +297,10 @@ func DefaultServiceActions() []ServiceAction {
 	return []ServiceAction{
 		{
 			Name:    "Restart Nginx",
-			Desc:    "nprestart",
+			Desc:    "/bin/nprestart",
 			Confirm: true,
 			Run: func() string {
-				out, err := runCmd("nprestart")
+				out, err := runCmd("/bin/nprestart")
 				if err != nil {
 					return fmt.Sprintf("[red]FAILED:[-] %s (%v)", out, err)
 				}
@@ -300,10 +309,10 @@ func DefaultServiceActions() []ServiceAction {
 		},
 		{
 			Name:    "Restart PHP-FPM (all)",
-			Desc:    "scoots php restart all",
+			Desc:    "scoots php restart all (bash function)",
 			Confirm: true,
 			Run: func() string {
-				out, err := runCmd("scoots", "php", "restart", "all")
+				out, err := runBashFunc("scoots php restart all")
 				if err != nil {
 					return fmt.Sprintf("[red]FAILED:[-] %s (%v)", out, err)
 				}
