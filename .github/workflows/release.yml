@@ -1,0 +1,31 @@
+name: Deploy Latest Release
+
+on:
+  push:
+    branches:
+      - main  # Runs every time you push to the main branch
+
+jobs:
+  publish:
+    runs-on: almalinux-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Optional: If your 'sysmonitor' needs to be compiled (Go, C, etc.), do it here.
+      # If it's just a bash/python script, you can skip compilation.
+
+      - name: Generate Automatic Version Tag
+        id: tagger
+        run: |
+          # Creates a unique tag based on the build number (e.g., v1.0.1, v1.0.2)
+          echo "TAG_NAME=v1.0.${{ github.run_number }}" >> $GITHUB_ENV
+
+      - name: Create and Upload to Latest Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Release ${{ env.TAG_NAME }}
+          make_latest: "true" # This forces GitHub to point the "latest" URL here
+          files: |
+            sysmonitor
