@@ -3,29 +3,41 @@ name: Deploy Latest Release
 on:
   push:
     branches:
-      - main  # Runs every time you push to the main branch
+      - main
+
+# 1. FIXES THE PERMISSION ERROR: Grants permission to create releases
+permissions:
+  contents: write
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Standard runner environment
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Optional: If your 'sysmonitor' needs to be compiled (Go, C, etc.), do it here.
-      # If it's just a bash/python script, you can skip compilation.
+      # 2. SETS UP GO COMPILER
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      # 3. BUILDS FOR ALMALINUX/CENTOS x64 (Linux AMD64)
+      - name: Build Go Binary
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o sysmonitor .
 
       - name: Generate Automatic Version Tag
         id: tagger
         run: |
-          # Creates a unique tag based on the build number (e.g., v1.0.1, v1.0.2)
           echo "TAG_NAME=v1.0.${{ github.run_number }}" >> $GITHUB_ENV
 
+      # 4. FIXES DEPRECATION WARNING: Upgraded from @v2 to @v3
       - name: Create and Upload to Latest Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: Release ${{ env.TAG_NAME }}
-          make_latest: "true" # This forces GitHub to point the "latest" URL here
+          make_latest: "true"
           files: |
             sysmonitor
