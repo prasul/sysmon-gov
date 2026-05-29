@@ -180,15 +180,6 @@ func (c *WPLoginCollector) HasLiveAttack() bool {
 	return len(c.liveIPs) > 0
 }
 
-// ResetLive clears the live-hit tracker for a new collection cycle.
-// Call this before the shared LogReader dispatches lines so that
-// IsLive flags reflect only the current tick's activity.
-func (c *WPLoginCollector) ResetLive() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.liveIPs = make(map[string]bool)
-}
-
 // ── Internal helpers ────────────────────────────────────────────────
 
 // readNewLines reads only newly-appended bytes since the last call.

@@ -2,7 +2,6 @@
 sysmon
 
 # Go
-go.sum
 vendor/
 
 # IDE

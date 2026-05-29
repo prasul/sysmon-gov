@@ -37,11 +37,6 @@ type Deps struct {
 	WPFiles   *metrics.WPFileCollector
 	NgxErrors *metrics.NginxErrorCollector
 	LiveTail  *metrics.LiveTailer
-
-	// AccessReader reads each access log file ONCE per tick and
-	// dispatches parsed lines to Nginx, Bots, and WPLogin via
-	// subscribers — eliminating triple I/O on the same files.
-	AccessReader *metrics.LogReader
 }
 
 // Page names for tview.Pages.
@@ -286,13 +281,12 @@ func (a *App) refresh() {
 	disks, _ := metrics.GetDiskUsage()
 	topCPU, topMem, _ := metrics.GetTopProcesses(maxProcs)
 
-	// Access logs — shared reader dispatches to Nginx, Bots, WPLogin
-	// in a single pass (reads each file ONCE instead of 3 times).
-	if a.deps.WPLogin != nil {
-		a.deps.WPLogin.ResetLive()
+	// Nginx + Bots
+	if a.deps.Nginx != nil {
+		a.deps.Nginx.Collect()
 	}
-	if a.deps.AccessReader != nil {
-		a.deps.AccessReader.Collect()
+	if a.deps.Bots != nil {
+		a.deps.Bots.Collect()
 	}
 	var topPaths []metrics.NginxPathHit
 	var topIPs []metrics.NginxIPHit
@@ -315,7 +309,10 @@ func (a *App) refresh() {
 		mysqlStats = a.deps.MySQL.Collect()
 	}
 
-	// PHP Slow (separate log file — not part of shared reader)
+	// WP-Login + PHP Slow
+	if a.deps.WPLogin != nil {
+		a.deps.WPLogin.Collect()
+	}
 	if a.deps.PHPSlow != nil {
 		a.deps.PHPSlow.Collect()
 	}

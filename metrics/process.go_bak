@@ -1,27 +1,5 @@
 package metrics
 
-// ========================================================================
-//  OPTIMIZED PROCESS SCANNER
-// ========================================================================
-//
-// The original process.go reads TWO files per PID every 2 seconds:
-//   /proc/<pid>/stat   (~200 bytes, needed for CPU ticks + name)
-//   /proc/<pid>/status (~2KB, 50+ lines, scanned for one field: VmRSS)
-//
-// On a server with 200 processes, that's 400 ReadFile calls per tick.
-//
-// This version:
-//   1. Replaces /proc/<pid>/status with /proc/<pid>/statm — a single
-//      line of 7 numbers where field[1] is RSS in pages.  ~20 bytes
-//      instead of ~2KB.  Eliminates the line-by-line scan entirely.
-//
-//   2. Caches MemTotal from /proc/meminfo — it never changes.
-//
-//   3. Uses os.ReadFile once for each file (no change), but reads
-//      ~95% less data per PID.
-//
-// Net effect: ~50% fewer bytes read from /proc per tick.
-
 import (
 	"fmt"
 	"os"
@@ -43,7 +21,8 @@ type ProcessInfo struct {
 }
 
 // prevProcCPU stores the last snapshot of per-PID CPU ticks so we can
-// compute deltas on the next collection cycle.
+// compute deltas on the next collection cycle.  Protected by a mutex
+// because the UI refresh goroutine drives collection.
 var (
 	prevProcCPU      map[int]procCPUSnap
 	prevProcCPUMutex sync.Mutex
@@ -51,44 +30,41 @@ var (
 )
 
 type procCPUSnap struct {
-	utime uint64
-	stime uint64
+	utime uint64 // user-mode ticks
+	stime uint64 // kernel-mode ticks
 }
 
-// Cached total memory — read once, never changes.
-var (
-	cachedTotalMemKB uint64
-	totalMemOnce     sync.Once
-)
-
-// System page size — read once at startup.
-var pageSize = uint64(os.Getpagesize())
-
-// GetTopProcesses scans /proc for all processes, computes CPU% via
-// tick deltas, and returns two slices sorted by CPU and memory.
+// GetTopProcesses scans every numeric directory under /proc, reads the
+// process stats, computes CPU% via tick deltas, and returns two slices
+// sorted by CPU and memory respectively.  `n` controls how many entries
+// each list contains.
 func GetTopProcesses(n int) (byCPU []ProcessInfo, byMem []ProcessInfo, err error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading /proc: %w", err)
 	}
 
-	// Cache MemTotal — it never changes at runtime.
-	totalMemOnce.Do(func() {
-		cachedTotalMemKB = readTotalMemKB()
-	})
+	// We need total system memory to compute per-process memory %.
+	totalMemKB := getTotalMemKB()
 
+	// Clock ticks per second — almost always 100 on Linux, but we
+	// read it properly via sysconf if available.  Hardcoding 100 is
+	// the pragmatic choice (Go's syscall package doesn't expose
+	// sysconf); every major distro uses CONFIG_HZ=100 for userspace.
 	const clockTicks = 100.0
+
 	now := time.Now()
 	current := make(map[int]procCPUSnap)
 	var procs []ProcessInfo
 
 	for _, entry := range entries {
+		// Only numeric directory names are PIDs.
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
 			continue
 		}
 
-		info, snap, ok := readProcessInfoFast(pid, cachedTotalMemKB)
+		info, snap, ok := readProcessInfo(pid, totalMemKB)
 		if !ok {
 			continue
 		}
@@ -97,7 +73,7 @@ func GetTopProcesses(n int) (byCPU []ProcessInfo, byMem []ProcessInfo, err error
 		procs = append(procs, info)
 	}
 
-	// Compute CPU% from deltas.
+	// ── Compute CPU % from deltas ──────────────────────────────
 	prevProcCPUMutex.Lock()
 	elapsed := now.Sub(prevProcTime).Seconds()
 
@@ -109,7 +85,11 @@ func GetTopProcesses(n int) (byCPU []ProcessInfo, byMem []ProcessInfo, err error
 				continue
 			}
 			cur := current[pid]
-			totalDelta := float64((cur.utime - prev.utime) + (cur.stime - prev.stime))
+			deltaU := cur.utime - prev.utime
+			deltaS := cur.stime - prev.stime
+			totalDelta := float64(deltaU + deltaS)
+
+			// Convert ticks → seconds → percentage of wall-clock time.
 			procs[i].CPUPercent = (totalDelta / clockTicks / elapsed) * 100.0
 		}
 	}
@@ -118,13 +98,14 @@ func GetTopProcesses(n int) (byCPU []ProcessInfo, byMem []ProcessInfo, err error
 	prevProcTime = now
 	prevProcCPUMutex.Unlock()
 
-	// Sort by CPU.
+	// ── Sort and return top N ──────────────────────────────────
+	// By CPU
 	sort.Slice(procs, func(i, j int) bool {
 		return procs[i].CPUPercent > procs[j].CPUPercent
 	})
 	byCPU = topN(procs, n)
 
-	// Sort by Memory.
+	// By Memory
 	sort.Slice(procs, func(i, j int) bool {
 		return procs[i].MemPercent > procs[j].MemPercent
 	})
@@ -133,23 +114,25 @@ func GetTopProcesses(n int) (byCPU []ProcessInfo, byMem []ProcessInfo, err error
 	return byCPU, byMem, nil
 }
 
-// readProcessInfoFast reads /proc/<pid>/stat for CPU + name, and
-// /proc/<pid>/statm for RSS.
-//
-// /proc/<pid>/statm is a single line: "size resident shared text lib data dt"
-// where 'resident' (field 1) is RSS in pages.  This replaces the old
-// approach of reading the multi-line /proc/<pid>/status and scanning
-// 50+ lines for "VmRSS:".
-func readProcessInfoFast(pid int, totalMemKB uint64) (ProcessInfo, procCPUSnap, bool) {
+// readProcessInfo reads /proc/<pid>/stat and /proc/<pid>/status for a
+// single process.  Returns false if the process vanished (race with
+// process exit) or is unreadable.
+func readProcessInfo(pid int, totalMemKB uint64) (ProcessInfo, procCPUSnap, bool) {
 	pidDir := filepath.Join("/proc", strconv.Itoa(pid))
 
 	// ── /proc/<pid>/stat ───────────────────────────────────────
+	// Format (simplified):
+	//   pid (comm) state ppid ... utime stime ...
+	// Fields are space-separated, but the command name (field 2) can
+	// contain spaces and is wrapped in parentheses.  We find the last
+	// ')' to safely split the rest.
 	statData, err := os.ReadFile(filepath.Join(pidDir, "stat"))
 	if err != nil {
 		return ProcessInfo{}, procCPUSnap{}, false
 	}
 
 	statStr := string(statData)
+	// Find the command name between first '(' and last ')'.
 	nameStart := strings.IndexByte(statStr, '(')
 	nameEnd := strings.LastIndexByte(statStr, ')')
 	if nameStart < 0 || nameEnd < 0 || nameEnd <= nameStart {
@@ -157,6 +140,9 @@ func readProcessInfoFast(pid int, totalMemKB uint64) (ProcessInfo, procCPUSnap, 
 	}
 	name := statStr[nameStart+1 : nameEnd]
 
+	// Everything after ") " is space-separated fields starting at
+	// index 0 = state.  utime is field index 11, stime is 12
+	// (relative to the part after the command name).
 	rest := strings.Fields(statStr[nameEnd+2:])
 	if len(rest) < 13 {
 		return ProcessInfo{}, procCPUSnap{}, false
@@ -164,15 +150,19 @@ func readProcessInfoFast(pid int, totalMemKB uint64) (ProcessInfo, procCPUSnap, 
 	utime, _ := strconv.ParseUint(rest[11], 10, 64)
 	stime, _ := strconv.ParseUint(rest[12], 10, 64)
 
-	// ── /proc/<pid>/statm — single line, ~20 bytes ─────────────
-	// Format: size resident shared text lib data dt
-	// We only need field 1 (resident) = RSS in pages.
+	// ── /proc/<pid>/status → VmRSS ────────────────────────────
+	// VmRSS is the resident set size in kB — actual physical RAM
+	// the process is using right now.
 	var rssKB uint64
-	if statmData, err := os.ReadFile(filepath.Join(pidDir, "statm")); err == nil {
-		fields := strings.Fields(string(statmData))
-		if len(fields) >= 2 {
-			rssPages, _ := strconv.ParseUint(fields[1], 10, 64)
-			rssKB = rssPages * pageSize / 1024
+	if statusData, err := os.ReadFile(filepath.Join(pidDir, "status")); err == nil {
+		for _, line := range strings.Split(string(statusData), "\n") {
+			if strings.HasPrefix(line, "VmRSS:") {
+				parts := strings.Fields(line)
+				if len(parts) >= 2 {
+					rssKB, _ = strconv.ParseUint(parts[1], 10, 64)
+				}
+				break
+			}
 		}
 	}
 
@@ -186,14 +176,15 @@ func readProcessInfoFast(pid int, totalMemKB uint64) (ProcessInfo, procCPUSnap, 
 		Name:       name,
 		MemMB:      float64(rssKB) / 1024.0,
 		MemPercent: memPct,
+		// CPUPercent is computed later from deltas.
 	}
 	snap := procCPUSnap{utime: utime, stime: stime}
 	return info, snap, true
 }
 
-// readTotalMemKB reads MemTotal from /proc/meminfo.  Called once and
-// cached.
-func readTotalMemKB() uint64 {
+// getTotalMemKB reads MemTotal from /proc/meminfo.  Returns 0 on error
+// (which simply makes memory percentages show as 0%).
+func getTotalMemKB() uint64 {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
 		return 0
@@ -210,6 +201,7 @@ func readTotalMemKB() uint64 {
 	return 0
 }
 
+// topN returns the first n elements (or all if fewer than n).
 func topN(procs []ProcessInfo, n int) []ProcessInfo {
 	if len(procs) <= n {
 		result := make([]ProcessInfo, len(procs))

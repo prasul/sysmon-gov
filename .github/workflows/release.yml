@@ -25,8 +25,7 @@ jobs:
       # 3. BUILDS FOR ALMALINUX/CENTOS x64 (Linux AMD64)
       - name: Build Go Binary
         run: |
-          GOOS=linux GOARCH=amd64 go build -o sysmonitor .
-
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o sysmonitor .
       - name: Generate Automatic Version Tag
         id: tagger
         run: |

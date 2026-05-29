@@ -94,14 +94,6 @@ func main() {
 	ngxErrors := metrics.NewNginxErrorCollector(*errorLogFlag)
 	liveTail := metrics.NewLiveTailer(*logPathFlag, *errorLogFlag, *liveBufferFlag)
 
-	// ── Shared log reader (CPU optimization) ────────────────────
-	// Reads each access log file ONCE per tick, dispatches parsed
-	// lines to all three access-log consumers via subscribers.
-	accessReader := metrics.NewLogReader(*logPathFlag)
-	accessReader.Subscribe(metrics.NginxSubscriber(nginx))
-	accessReader.Subscribe(metrics.BotSubscriber(bots))
-	accessReader.Subscribe(metrics.WPLoginSubscriber(wpLogin))
-
 	// ── MySQL auto-detect ───────────────────────────────────────
 	dsn := *mysqlDSN
 	var cnfPathForFallback string
@@ -133,15 +125,14 @@ func main() {
 
 	// ── Launch ──────────────────────────────────────────────────
 	deps := ui.Deps{
-		Nginx:        nginx,
-		Bots:         bots,
-		WPLogin:      wpLogin,
-		PHPSlow:      phpSlow,
-		MySQL:        mysql,
-		WPFiles:      wpFiles,
-		NgxErrors:    ngxErrors,
-		LiveTail:     liveTail,
-		AccessReader: accessReader,
+		Nginx:     nginx,
+		Bots:      bots,
+		WPLogin:   wpLogin,
+		PHPSlow:   phpSlow,
+		MySQL:     mysql,
+		WPFiles:   wpFiles,
+		NgxErrors: ngxErrors,
+		LiveTail:  liveTail,
 	}
 	app := ui.New(interval, deps)
 	if err := app.Run(); err != nil {
