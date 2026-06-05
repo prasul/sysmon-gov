@@ -186,15 +186,6 @@ func runCmd(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// runBashFunc executes a bash function (like scoots) via a login shell.
-// The command string is built from pre-validated inputs only — the IP
-// has already passed net.ParseIP validation before reaching here.
-func runBashFunc(command string) (string, error) {
-	cmd := exec.Command("bash", "-l", "-c", command)
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
-}
-
 // ========================================================================
 //  BLOCK IP - runs both csf and scoots, then auto-restarts
 // ========================================================================
@@ -212,8 +203,8 @@ func blockIP(ip string) string {
 		results = append(results, fmt.Sprintf("[green]csf -d:[-] OK"))
 	}
 
-	// Step 2: scoots block (bash function)
-	out, err = runBashFunc(fmt.Sprintf("scoots ip block %s", ip))
+	// Step 2: scoots block
+	out, err = runCmd("scoots", "ip", "block", ip)
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots block:[-] %s (%v)", out, err))
 	} else {
@@ -229,15 +220,15 @@ func blockIP(ip string) string {
 	}
 
 	// Step 4: Auto-restart nginx
-	out, err = runCmd("/bin/nprestart")
+	out, err = runCmd("nprestart")
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]nprestart:[-] %s (%v)", out, err))
 	} else {
 		results = append(results, fmt.Sprintf("[green]nprestart:[-] OK"))
 	}
 
-	// Step 5: Auto-restart PHP-FPM (bash function)
-	out, err = runBashFunc("scoots php restart all")
+	// Step 5: Auto-restart PHP-FPM
+	out, err = runCmd("scoots", "php", "restart", "all")
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots php restart:[-] %s (%v)", out, err))
 	} else {
@@ -262,7 +253,7 @@ func unblockIP(ip string) string {
 		results = append(results, fmt.Sprintf("[green]csf -dr:[-] OK"))
 	}
 
-	out, err = runBashFunc(fmt.Sprintf("scoots ip unblock %s", ip))
+	out, err = runCmd("scoots", "ip", "unblock", ip)
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots unblock:[-] %s (%v)", out, err))
 	} else {
@@ -297,10 +288,10 @@ func DefaultServiceActions() []ServiceAction {
 	return []ServiceAction{
 		{
 			Name:    "Restart Nginx",
-			Desc:    "/bin/nprestart",
+			Desc:    "nprestart",
 			Confirm: true,
 			Run: func() string {
-				out, err := runCmd("/bin/nprestart")
+				out, err := runCmd("nprestart")
 				if err != nil {
 					return fmt.Sprintf("[red]FAILED:[-] %s (%v)", out, err)
 				}
@@ -309,10 +300,10 @@ func DefaultServiceActions() []ServiceAction {
 		},
 		{
 			Name:    "Restart PHP-FPM (all)",
-			Desc:    "scoots php restart all (bash function)",
+			Desc:    "scoots php restart all",
 			Confirm: true,
 			Run: func() string {
-				out, err := runBashFunc("scoots php restart all")
+				out, err := runCmd("scoots", "php", "restart", "all")
 				if err != nil {
 					return fmt.Sprintf("[red]FAILED:[-] %s (%v)", out, err)
 				}
@@ -355,7 +346,64 @@ func DefaultServiceActions() []ServiceAction {
 				return fmt.Sprintf("[green]OK:[-] %s", out)
 			},
 		},
+		{
+			Name:    "Bounce Full Stack",
+			Desc:    "nginx + php + mysql + redis (parallel)",
+			Confirm: true,
+			Run:     bounceStack,
+		},
 	}
+}
+
+// ========================================================================
+//  BOUNCE STACK — parallel restart of the full server stack
+// ========================================================================
+
+// bounceStack restarts nginx, PHP-FPM, MySQL, and flushes Redis
+// concurrently (like the bash bounce-stack function).  All four
+// commands run in parallel; results are collected via a WaitGroup.
+func bounceStack() string {
+	type svcResult struct {
+		name   string
+		output string
+		err    error
+	}
+
+	services := []struct {
+		name string
+		cmd  string
+		args []string
+	}{
+		{"Nginx", "/bin/nprestart", nil},
+		{"PHP-FPM", "bash", []string{"-l", "-c", "scoots php restart all"}},
+		{"MySQL", "systemctl", []string{"restart", "mysql"}},
+		{"Redis", "redis-cli", []string{"flushall"}},
+	}
+
+	results := make([]svcResult, len(services))
+	var wg sync.WaitGroup
+
+	for i, svc := range services {
+		wg.Add(1)
+		go func(idx int, name, cmd string, args []string) {
+			defer wg.Done()
+			out, err := runCmd(cmd, args...)
+			results[idx] = svcResult{name: name, output: out, err: err}
+		}(i, svc.name, svc.cmd, svc.args)
+	}
+
+	wg.Wait()
+
+	var lines []string
+	for _, r := range results {
+		if r.err != nil {
+			lines = append(lines, fmt.Sprintf("[yellow]%s:[-] %s (%v)", r.name, r.output, r.err))
+		} else {
+			lines = append(lines, fmt.Sprintf("[green]✔ %s:[-] OK", r.name))
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // ========================================================================
@@ -662,9 +710,9 @@ func ShowCommandPalette(app *tview.Application, pages *tview.Pages, onDone func(
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(nil, 0, 1, false).
-			AddItem(list, 14, 0, true).
+			AddItem(list, 18, 0, true).
 			AddItem(nil, 0, 1, false),
-			55, 0, true).
+			60, 0, true).
 		AddItem(nil, 0, 1, false)
 
 	pages.AddPage(pagePalette, modal, true, true)
@@ -755,9 +803,9 @@ func executeServiceAction(app *tview.Application, pages *tview.Pages, action Ser
 			AddItem(nil, 0, 1, false).
 			AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 				AddItem(nil, 0, 1, false).
-				AddItem(resultView, 9, 0, true).
+				AddItem(resultView, 12, 0, true).
 				AddItem(nil, 0, 1, false),
-				55, 0, true).
+				60, 0, true).
 			AddItem(nil, 0, 1, false)
 
 		pages.AddPage(pageResult, resultModal, true, true)
