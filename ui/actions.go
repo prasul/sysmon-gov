@@ -220,7 +220,7 @@ func blockIP(ip string) string {
 	}
 
 	// Step 4: Auto-restart nginx
-	out, err = runCmd("nprestart")
+	out, err = runCmd("/bin/nprestart")
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]nprestart:[-] %s (%v)", out, err))
 	} else {
@@ -291,7 +291,7 @@ func DefaultServiceActions() []ServiceAction {
 			Desc:    "nprestart",
 			Confirm: true,
 			Run: func() string {
-				out, err := runCmd("nprestart")
+				out, err := runCmd("/bin/nprestart")
 				if err != nil {
 					return fmt.Sprintf("[red]FAILED:[-] %s (%v)", out, err)
 				}
