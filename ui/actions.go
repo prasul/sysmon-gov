@@ -204,7 +204,7 @@ func blockIP(ip string) string {
 	}
 
 	// Step 2: scoots block
-	out, err = runCmd("scoots", "ip", "block", ip)
+	out, err = runCmd("bash", "-l", "-c", fmt.Sprintf("scoots ip block %s", ip))
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots block:[-] %s (%v)", out, err))
 	} else {
@@ -220,7 +220,7 @@ func blockIP(ip string) string {
 	}
 
 	// Step 4: Auto-restart nginx
-	out, err = runCmd("/bin/nprestart")
+	out, err = runCmd("bash", "-l", "-c", "nprestart")
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]nprestart:[-] %s (%v)", out, err))
 	} else {
@@ -228,7 +228,7 @@ func blockIP(ip string) string {
 	}
 
 	// Step 5: Auto-restart PHP-FPM
-	out, err = runCmd("scoots", "php", "restart", "all")
+	out, err = runCmd("bash", "-l", "-c", "scoots php restart all")
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots php restart:[-] %s (%v)", out, err))
 	} else {
@@ -253,7 +253,7 @@ func unblockIP(ip string) string {
 		results = append(results, fmt.Sprintf("[green]csf -dr:[-] OK"))
 	}
 
-	out, err = runCmd("scoots", "ip", "unblock", ip)
+	out, err = runCmd("bash", "-l", "-c", fmt.Sprintf("scoots ip unblock %s", ip))
 	if err != nil {
 		results = append(results, fmt.Sprintf("[yellow]scoots unblock:[-] %s (%v)", out, err))
 	} else {
@@ -291,7 +291,7 @@ func DefaultServiceActions() []ServiceAction {
 			Desc:    "nprestart",
 			Confirm: true,
 			Run: func() string {
-				out, err := runCmd("/bin/nprestart")
+				out, err := runCmd("bash", "-l", "-c", "nprestart")
 				if err != nil {
 					return fmt.Sprintf("[red]FAILED:[-] %s (%v)", out, err)
 				}
@@ -303,7 +303,7 @@ func DefaultServiceActions() []ServiceAction {
 			Desc:    "scoots php restart all",
 			Confirm: true,
 			Run: func() string {
-				out, err := runCmd("scoots", "php", "restart", "all")
+				out, err := runCmd("bash", "-l", "-c", "scoots php restart all")
 				if err != nil {
 					return fmt.Sprintf("[red]FAILED:[-] %s (%v)", out, err)
 				}
@@ -374,7 +374,7 @@ func bounceStack() string {
 		cmd  string
 		args []string
 	}{
-		{"Nginx", "/bin/nprestart", nil},
+		{"Nginx", "bash", []string{"-l", "-c", "nprestart"}},
 		{"PHP-FPM", "bash", []string{"-l", "-c", "scoots php restart all"}},
 		{"MySQL", "systemctl", []string{"restart", "mysql"}},
 		{"Redis", "redis-cli", []string{"flushall"}},
