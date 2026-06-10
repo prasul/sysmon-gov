@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -251,9 +252,6 @@ func (a *App) buildLayout() {
 
 	a.tviewApp.SetRoot(a.pages, true)
 }
-
-// ── Refresh ─────────────────────────────────────────────────────────
-
 func (a *App) refreshLoop() {
 	a.doRefresh()
 	ticker := time.NewTicker(a.interval)
@@ -274,86 +272,131 @@ func (a *App) doRefresh() {
 	}
 }
 
+// ── Refresh ─────────────────────────────────────────────────────────
+
 func (a *App) refresh() {
 	a.blinkTick++
 
-	// System
-	host, _ := metrics.GetHostInfo()
-	load, _ := metrics.GetLoadAvg()
-	mem, _ := metrics.GetMemoryInfo()
-	disks, _ := metrics.GetDiskUsage()
-	topCPU, topMem, _ := metrics.GetTopProcesses(maxProcs)
+	// ── Result slots ────────────────────────────────────────────
+	// Each goroutine writes to its own slot — no shared state,
+	// no locks needed between goroutines.
 
-	// Access logs — shared reader dispatches to Nginx, Bots, WPLogin
-	// in a single pass (reads each file ONCE instead of 3 times).
-	if a.deps.WPLogin != nil {
-		a.deps.WPLogin.ResetLive()
-	}
-	if a.deps.AccessReader != nil {
-		a.deps.AccessReader.Collect()
-	}
-	var topPaths []metrics.NginxPathHit
-	var topIPs []metrics.NginxIPHit
-	var totalReqs int
-	if a.deps.Nginx != nil {
-		topPaths = a.deps.Nginx.TopPaths(maxNginxRows)
-		topIPs = a.deps.Nginx.TopIPs(maxNginxRows)
-		totalReqs = a.deps.Nginx.TotalRequests()
-	}
-	var botHits []metrics.BotHit
-	var botTotal int
-	if a.deps.Bots != nil {
-		botHits = a.deps.Bots.TopBots(maxBotRows)
-		botTotal = a.deps.Bots.TotalBotHits()
-	}
+	var (
+		host   *metrics.HostInfo
+		load   *metrics.LoadAvg
+		mem    *metrics.MemoryInfo
+		disks  []metrics.DiskInfo
+		topCPU []metrics.ProcessInfo
+		topMem []metrics.ProcessInfo
 
-	// MySQL
-	var mysqlStats *metrics.MySQLStats
-	if a.deps.MySQL != nil && a.deps.MySQL.IsEnabled() {
-		mysqlStats = a.deps.MySQL.Collect()
-	}
+		topPaths  []metrics.NginxPathHit
+		topIPs    []metrics.NginxIPHit
+		totalReqs int
+		botHits   []metrics.BotHit
+		botTotal  int
+		wpHits    []metrics.WPLoginHit
+		wpTotal   int
+		wpLive    bool
+		phpEnts   []metrics.PHPSlowEntry
+		phpTotal  int
+		ngxErrs   []metrics.NginxErrorHit
+		errTotal  int
 
-	// PHP Slow (separate log file — not part of shared reader)
-	if a.deps.PHPSlow != nil {
-		a.deps.PHPSlow.Collect()
-	}
-	var wpHits []metrics.WPLoginHit
-	var wpTotal int
-	var wpLive bool
-	if a.deps.WPLogin != nil {
-		wpHits = a.deps.WPLogin.TopHits(maxWPRows)
-		wpTotal = a.deps.WPLogin.TotalHits()
-		wpLive = a.deps.WPLogin.HasLiveAttack()
-	}
-	var phpEntries []metrics.PHPSlowEntry
-	var phpTotal int
-	if a.deps.PHPSlow != nil {
-		phpEntries = a.deps.PHPSlow.TopEntries(maxPHPRows)
-		phpTotal = a.deps.PHPSlow.TotalEntries()
-	}
+		mysqlStats *metrics.MySQLStats
 
-	// WP File Changes
-	if a.deps.WPFiles != nil {
-		a.deps.WPFiles.Collect()
-	}
-	var fileChanges []metrics.WPFileChange
-	var fileTotal int
-	if a.deps.WPFiles != nil {
-		fileChanges = a.deps.WPFiles.TopChanges(maxFileRows)
-		fileTotal = a.deps.WPFiles.TotalChanges()
-	}
+		fileChanges []metrics.WPFileChange
+		fileTotal   int
+	)
 
-	// Nginx Errors
-	if a.deps.NgxErrors != nil {
-		a.deps.NgxErrors.Collect()
-	}
-	var ngxErrors []metrics.NginxErrorHit
-	var errTotal int
-	if a.deps.NgxErrors != nil {
-		ngxErrors = a.deps.NgxErrors.TopErrors(maxErrRows)
-		errTotal = a.deps.NgxErrors.TotalErrors()
-	}
+	var wg sync.WaitGroup
 
+	// ── Goroutine 1: System metrics ─────────────────────────────
+	// Reads /proc (loadavg, meminfo, mounts, per-PID stat+statm).
+	// This is typically the slowest group (~50-80ms with 200 PIDs).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		host, _ = metrics.GetHostInfo()
+		load, _ = metrics.GetLoadAvg()
+		mem, _ = metrics.GetMemoryInfo()
+		disks, _ = metrics.GetDiskUsage()
+		topCPU, topMem, _ = metrics.GetTopProcesses(maxProcs)
+	}()
+
+	// ── Goroutine 2: Log collectors ─────────────────────────────
+	// Reads access logs (shared reader), PHP slow log, nginx error logs.
+	// I/O bound — overlaps perfectly with /proc reads.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		// Access logs — shared reader dispatches to nginx, bots, wplogin.
+		if a.deps.WPLogin != nil {
+			a.deps.WPLogin.ResetLive()
+		}
+		if a.deps.AccessReader != nil {
+			a.deps.AccessReader.Collect()
+		}
+
+		// Extract results from the subscribers.
+		if a.deps.Nginx != nil {
+			topPaths = a.deps.Nginx.TopPaths(maxNginxRows)
+			topIPs = a.deps.Nginx.TopIPs(maxNginxRows)
+			totalReqs = a.deps.Nginx.TotalRequests()
+		}
+		if a.deps.Bots != nil {
+			botHits = a.deps.Bots.TopBots(maxBotRows)
+			botTotal = a.deps.Bots.TotalBotHits()
+		}
+		if a.deps.WPLogin != nil {
+			wpHits = a.deps.WPLogin.TopHits(maxWPRows)
+			wpTotal = a.deps.WPLogin.TotalHits()
+			wpLive = a.deps.WPLogin.HasLiveAttack()
+		}
+
+		// PHP slow log (separate file).
+		if a.deps.PHPSlow != nil {
+			a.deps.PHPSlow.Collect()
+			phpEnts = a.deps.PHPSlow.TopEntries(maxPHPRows)
+			phpTotal = a.deps.PHPSlow.TotalEntries()
+		}
+
+		// Nginx error logs (separate files).
+		if a.deps.NgxErrors != nil {
+			a.deps.NgxErrors.Collect()
+			ngxErrs = a.deps.NgxErrors.TopErrors(maxErrRows)
+			errTotal = a.deps.NgxErrors.TotalErrors()
+		}
+	}()
+
+	// ── Goroutine 3: MySQL ──────────────────────────────────────
+	// Network call to MySQL — completely independent of file I/O.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if a.deps.MySQL != nil && a.deps.MySQL.IsEnabled() {
+			mysqlStats = a.deps.MySQL.Collect()
+		}
+	}()
+
+	// ── Goroutine 4: Filesystem scan ────────────────────────────
+	// Walks wp-content directories — I/O bound, independent.
+	// Internally throttled to every 30s, so most ticks it's a no-op.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if a.deps.WPFiles != nil {
+			a.deps.WPFiles.Collect()
+			fileChanges = a.deps.WPFiles.TopChanges(maxFileRows)
+			fileTotal = a.deps.WPFiles.TotalChanges()
+		}
+	}()
+
+	// ── Barrier ─────────────────────────────────────────────────
+	// Block until all four goroutines finish.
+	wg.Wait()
+
+	// ── Render (single QueueUpdateDraw) ─────────────────────────
 	a.tviewApp.QueueUpdateDraw(func() {
 		a.renderHeader(host)
 		a.renderLoad(load, host)
@@ -365,9 +408,9 @@ func (a *App) refresh() {
 		a.renderBots(botHits, botTotal)
 		a.renderMySQL(mysqlStats)
 		a.renderWPLogin(wpHits, wpTotal, wpLive)
-		a.renderPHPSlow(phpEntries, phpTotal)
+		a.renderPHPSlow(phpEnts, phpTotal)
 		a.renderWPFiles(fileChanges, fileTotal)
-		a.renderNgxErrors(ngxErrors, errTotal)
+		a.renderNgxErrors(ngxErrs, errTotal)
 		a.renderDisk(disks)
 		a.renderFooter()
 
@@ -379,15 +422,12 @@ func (a *App) refresh() {
 			FileChangeCount: fileTotal,
 			NumCPUs:         runtime.NumCPU(),
 		}
-		// Memory
 		if mem != nil {
 			am.MemPercent = mem.UsedPercent
 		}
-		// Load
 		if load != nil {
 			am.Load1m = load.Load1
 		}
-		// Disks
 		for _, d := range disks {
 			am.DiskUsages = append(am.DiskUsages, DiskUsage{
 				Mount:   d.MountPoint,
@@ -396,7 +436,6 @@ func (a *App) refresh() {
 				Used:    fmt.Sprintf("%.0fG", d.UsedGB),
 			})
 		}
-		// WP-Login IPs
 		for _, h := range wpHits {
 			am.WPLoginIPs = append(am.WPLoginIPs, WPLoginEntry{
 				IP:      h.IP,
@@ -404,7 +443,6 @@ func (a *App) refresh() {
 				Country: h.Country,
 			})
 		}
-		// MySQL
 		if mysqlStats != nil {
 			am.MySQLActive = mysqlStats.ActiveQueries
 			if len(mysqlStats.Processes) > 0 {
