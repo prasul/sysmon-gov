@@ -29,6 +29,12 @@ func (a *App) buildLivePage() tview.Primitive {
 	a.liveMysqlTable = styledTable()
 	applyBorder(a.liveMysqlTable.Box, " ◉ MySQL Live ", borderData, titleData)
 
+	a.redisInfoView = styledTextView(tview.AlignLeft)
+	applyBorder(a.redisInfoView.Box, " ◈ Redis Memory ", borderData, titleData)
+
+	a.redisKeysTable = styledTable()
+	applyBorder(a.redisKeysTable.Box, " ◈ Redis Top Keys ", borderData, titleData)
+
 	a.liveTailTable = styledTable()
 	applyBorder(a.liveTailTable.Box, " ● Live Log Tail ", borderData, titleData)
 
@@ -40,10 +46,11 @@ func (a *App) buildLivePage() tview.Primitive {
 	// Row 1: conn summary            (4)
 	// Row 2: synFlood + topConn      (10)
 	// Row 3: mysql live              (10)
-	// Row 4: live tail               (flex)
-	// Row 5: footer                  (1)
+	// Row 4: redis info + redis keys (9)
+	// Row 5: live tail               (flex)
+	// Row 6: footer                  (1)
 	grid := tview.NewGrid().
-		SetRows(1, 4, 10, 10, 0, 1).
+		SetRows(1, 4, 10, 10, 9, 0, 1).
 		SetColumns(0, 0).
 		SetBorders(false)
 
@@ -52,8 +59,10 @@ func (a *App) buildLivePage() tview.Primitive {
 	grid.AddItem(a.synFloodTable, 2, 0, 1, 1, 0, 0, false)
 	grid.AddItem(a.topConnTable, 2, 1, 1, 1, 0, 0, false)
 	grid.AddItem(a.liveMysqlTable, 3, 0, 1, 2, 0, 0, false) // full width
-	grid.AddItem(a.liveTailTable, 4, 0, 1, 2, 0, 0, false)
-	grid.AddItem(a.liveFooter, 5, 0, 1, 2, 0, 0, false)
+	grid.AddItem(a.redisInfoView, 4, 0, 1, 1, 0, 0, false)  // left half
+	grid.AddItem(a.redisKeysTable, 4, 1, 1, 1, 0, 0, false) // right half
+	grid.AddItem(a.liveTailTable, 5, 0, 1, 2, 0, 0, false)
+	grid.AddItem(a.liveFooter, 6, 0, 1, 2, 0, 0, false)
 
 	return grid
 }
@@ -71,6 +80,12 @@ func (a *App) refreshLive() {
 		mysqlStats = a.deps.MySQL.Collect()
 	}
 
+	// Redis — fast INFO every tick, key scan throttled internally.
+	if a.deps.Redis != nil {
+		a.deps.Redis.CollectInfo()
+		a.deps.Redis.MaybeCollectKeys()
+	}
+
 	if a.deps.LiveTail != nil {
 		a.deps.LiveTail.Collect()
 	}
@@ -85,6 +100,8 @@ func (a *App) refreshLive() {
 		a.renderSynFlood(netStats)
 		a.renderTopConns(netStats)
 		a.renderLiveMySQL(mysqlStats)
+		a.renderRedisInfo()
+		a.renderRedisKeys()
 		a.renderLiveTail(liveEntries)
 		a.renderLiveFooter()
 	})
@@ -286,6 +303,170 @@ func (a *App) renderLiveMySQL(stats *metrics.MySQLStats) {
 	}
 }
 
+// ── Redis Info (left panel) ─────────────────────────────────────────
+
+func (a *App) renderRedisInfo() {
+	a.redisInfoView.Clear()
+
+	if a.deps.Redis == nil {
+		fmt.Fprintf(a.redisInfoView, "\n [%s]Redis not configured[-]", cHex(textMuted))
+		return
+	}
+
+	if !a.deps.Redis.IsAvailable() {
+		errMsg := a.deps.Redis.LastError()
+		if errMsg != "" {
+			fmt.Fprintf(a.redisInfoView, "\n [%s]✗ %s[-]", cHex(sevRed), truncate(errMsg, 50))
+		} else {
+			fmt.Fprintf(a.redisInfoView, "\n [%s]connecting…[-]", cHex(textMuted))
+		}
+		return
+	}
+
+	info := a.deps.Redis.GetInfo()
+
+	// Title with key count.
+	a.redisInfoView.Box.SetTitle(fmt.Sprintf(
+		" ◈ Redis Memory  [%s keys] ", fmtCount64(info.TotalKeys)))
+
+	// Fragmentation color.
+	fragColor := cHex(sevGreen)
+	if info.FragRatio > 1.5 {
+		fragColor = cHex(sevRed)
+	} else if info.FragRatio > 1.2 {
+		fragColor = cHex(sevYellow)
+	}
+
+	// Hit rate color.
+	hitColor := cHex(sevGreen)
+	if info.HitRate < 80 {
+		hitColor = cHex(sevRed)
+	} else if info.HitRate < 95 {
+		hitColor = cHex(sevYellow)
+	}
+
+	// Memory bar.
+	usedPct := 0.0
+	if info.MaxMemory > 0 {
+		usedPct = float64(info.UsedMemory) / float64(info.MaxMemory) * 100.0
+	}
+	memColor := cHex(sevGreen)
+	if usedPct > 90 {
+		memColor = cHex(sevRed)
+	} else if usedPct > 75 {
+		memColor = cHex(sevYellow)
+	}
+
+	maxStr := "no limit"
+	if info.MaxMemoryHuman != "" && info.MaxMemory > 0 {
+		maxStr = info.MaxMemoryHuman
+	}
+
+	fmt.Fprintf(a.redisInfoView,
+		"\n [::b]Used[-:-:-]   [%s]%s[-]  [%s]Peak[-] %s  [%s]RSS[-] %s",
+		memColor, info.UsedMemoryHuman,
+		cHex(textSecondary), info.UsedMemoryPeakHuman,
+		cHex(textSecondary), info.UsedMemoryRSSHuman)
+
+	fmt.Fprintf(a.redisInfoView,
+		"\n [::b]Max[-:-:-]    %s  [::b]Policy[-:-:-] %s",
+		maxStr, info.MaxMemoryPolicy)
+
+	fmt.Fprintf(a.redisInfoView,
+		"\n [::b]Frag[-:-:-]   [%s]%.2f[-]  [::b]Hit%%[-:-:-] [%s]%.1f%%[-]  [::b]Clients[-:-:-] %d",
+		fragColor, info.FragRatio,
+		hitColor, info.HitRate,
+		info.ConnectedClients)
+
+	if usedPct > 0 {
+		fmt.Fprintf(a.redisInfoView,
+			"\n [::b]Capacity[-:-:-] [%s]%.1f%% used[-]  %s",
+			memColor, usedPct, plainBar(usedPct, 20))
+	}
+
+	// Keyspace summary.
+	for _, db := range info.Databases {
+		fmt.Fprintf(a.redisInfoView,
+			"\n [%s]%s[-] %s keys  [%s]%s expires[-]",
+			cHex(textAccent), db.DB,
+			fmtCount64(db.Keys),
+			cHex(textSecondary), fmtCount64(db.Expires))
+	}
+}
+
+// ── Redis Keys (right panel) ────────────────────────────────────────
+
+func (a *App) renderRedisKeys() {
+	a.redisKeysTable.Clear()
+
+	if a.deps.Redis == nil || !a.deps.Redis.IsAvailable() {
+		setHeaders(a.redisKeysTable, "")
+		a.redisKeysTable.SetCell(1, 0, cellMuted("  waiting for Redis…"))
+		return
+	}
+
+	ks := a.deps.Redis.GetKeyStats()
+
+	// Show scanning state.
+	if a.deps.Redis.IsScanning() {
+		scanTitle := " ◈ Redis Keys  [scanning…] "
+		if a.blinkTick%2 == 0 {
+			scanTitle = " ◈ Redis Keys  [scanning ●] "
+		}
+		a.redisKeysTable.SetTitle(scanTitle)
+	} else if ks.Scanned > 0 {
+		a.redisKeysTable.SetTitle(fmt.Sprintf(
+			" ◈ Redis Keys  [%d sampled in %s] ",
+			ks.Scanned, ks.ScanDuration.Round(time.Millisecond)))
+	}
+
+	if ks.Scanned == 0 {
+		setHeaders(a.redisKeysTable, "")
+		a.redisKeysTable.SetCell(1, 0, cellMuted("  scan pending…"))
+		return
+	}
+
+	// Show top prefixes by memory (most useful for WordPress/cache diagnosis).
+	setHeaders(a.redisKeysTable, " #", "Prefix", "Memory", "Keys", "Largest Key")
+
+	limit := 8
+	if len(ks.ByPrefix) < limit {
+		limit = len(ks.ByPrefix)
+	}
+
+	for i := 0; i < limit; i++ {
+		p := ks.ByPrefix[i]
+		r := i + 1
+
+		a.redisKeysTable.SetCell(r, 0, cellDim(fmt.Sprintf(" %d", r)))
+		a.redisKeysTable.SetCell(r, 1, cellAccent(truncate(p.Prefix, 20)))
+
+		memColor := sevGreen
+		if p.TotalMem > 50*1024*1024 {
+			memColor = sevRed
+		} else if p.TotalMem > 10*1024*1024 {
+			memColor = sevYellow
+		}
+		a.redisKeysTable.SetCell(r, 2,
+			tview.NewTableCell(metrics.FormatBytes(p.TotalMem)).
+				SetTextColor(memColor).SetAttributes(tcell.AttrBold))
+
+		a.redisKeysTable.SetCell(r, 3, cellDim(fmt.Sprintf("%d", p.Count)))
+
+		// Find the largest key for this prefix.
+		largestKey := ""
+		for _, k := range ks.TopKeys {
+			if k.Prefix == p.Prefix {
+				largestKey = k.Key
+				break
+			}
+		}
+		a.redisKeysTable.SetCell(r, 4,
+			tview.NewTableCell(truncate(largestKey, 36)).
+				SetTextColor(textPrimary).SetExpansion(1))
+	}
+}
+
 // ── Live Tail ───────────────────────────────────────────────────────
 
 func (a *App) renderLiveTail(entries []metrics.LiveLogEntry) {
@@ -359,4 +540,9 @@ func (a *App) renderLiveFooter() {
 		cHex(sevYellow), cHex(textSecondary),
 		cHex(textAccent), a.interval, cHex(textSecondary), cHex(textMuted),
 	)
+}
+
+// fmtCount64 formats an int64 with comma separators.
+func fmtCount64(n int64) string {
+	return fmtCount(int(n))
 }

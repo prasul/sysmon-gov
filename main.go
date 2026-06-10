@@ -130,6 +130,8 @@ func main() {
 	}
 
 	mysql := metrics.NewMySQLCollectorWithCnf(dsn, cnfPathForFallback)
+	// ── Redis ───────────────────────────────────────────────────
+	redisCollector := metrics.NewRedisCollector("127.0.0.1", "6379")
 
 	// ── Launch ──────────────────────────────────────────────────
 	deps := ui.Deps{
@@ -142,6 +144,7 @@ func main() {
 		NgxErrors:    ngxErrors,
 		LiveTail:     liveTail,
 		AccessReader: accessReader,
+		Redis:        redisCollector,
 	}
 	app := ui.New(interval, deps)
 	if err := app.Run(); err != nil {

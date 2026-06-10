@@ -29,21 +29,17 @@ const (
 // ── Deps bundles all collectors injected from main.go ───────────────
 
 type Deps struct {
-	Nginx     *metrics.NginxCollector
-	Bots      *metrics.BotCollector
-	WPLogin   *metrics.WPLoginCollector
-	PHPSlow   *metrics.PHPSlowCollector
-	MySQL     *metrics.MySQLCollector
-	WPFiles   *metrics.WPFileCollector
-	NgxErrors *metrics.NginxErrorCollector
-	LiveTail  *metrics.LiveTailer
-
-	// AccessReader reads each access log file ONCE per tick and
-	// dispatches parsed lines to Nginx, Bots, and WPLogin via
-	// subscribers — eliminating triple I/O on the same files.
+	Nginx        *metrics.NginxCollector
+	Bots         *metrics.BotCollector
+	WPLogin      *metrics.WPLoginCollector
+	PHPSlow      *metrics.PHPSlowCollector
+	MySQL        *metrics.MySQLCollector
+	WPFiles      *metrics.WPFileCollector
+	NgxErrors    *metrics.NginxErrorCollector
+	LiveTail     *metrics.LiveTailer
 	AccessReader *metrics.LogReader
+	Redis        *metrics.RedisCollector
 }
-
 // Page names for tview.Pages.
 const (
 	pageDashboard = "dashboard"
@@ -80,13 +76,15 @@ type App struct {
 	tracker      *ActionTracker
 
 	// Live page panels
-	liveHeader    *tview.TextView
-	connSummary   *tview.TextView
-	synFloodTable *tview.Table
-	topConnTable  *tview.Table
+	liveHeader     *tview.TextView
+	connSummary    *tview.TextView
+	synFloodTable  *tview.Table
+	topConnTable   *tview.Table
 	liveMysqlTable *tview.Table
-	liveTailTable *tview.Table
-	liveFooter    *tview.TextView
+	redisInfoView  *tview.TextView
+	redisKeysTable *tview.Table
+	liveTailTable  *tview.Table
+	liveFooter     *tview.TextView
 }
 
 func New(interval time.Duration, deps Deps) *App {
