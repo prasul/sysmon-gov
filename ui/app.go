@@ -369,13 +369,16 @@ func (a *App) refresh() {
 		}
 	}()
 
-	// ── Goroutine 3: MySQL ──────────────────────────────────────
-	// Network call to MySQL — completely independent of file I/O.
+// ── Goroutine 3: MySQL + Redis ──────────────────────────────
+	// Network calls — completely independent of file I/O.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		if a.deps.MySQL != nil && a.deps.MySQL.IsEnabled() {
 			mysqlStats = a.deps.MySQL.Collect()
+		}
+		if a.deps.Redis != nil {
+			a.deps.Redis.CollectInfo()
 		}
 	}()
 
@@ -512,6 +515,52 @@ func (a *App) renderMemory(m *metrics.MemoryInfo) {
 		themedBar(m.UsedPercent, 20), cHex(textAccent), m.UsedMB, m.TotalMB, cHex(sevColor(m.UsedPercent)), m.UsedPercent,
 		themedBar(m.SwapUsedPercent, 20), cHex(textAccent), m.SwapUsedMB, m.SwapTotalMB, cHex(sevColor(m.SwapUsedPercent)), m.SwapUsedPercent,
 	)
+
+	// Redis memory — shows alongside system memory when available.
+	if a.deps.Redis != nil && a.deps.Redis.IsAvailable() {
+		info := a.deps.Redis.GetInfo()
+		usedMB := info.UsedMemory / (1024 * 1024)
+		maxMB := info.MaxMemory / (1024 * 1024)
+
+		redisPct := 0.0
+		maxLabel := "no limit"
+		if info.MaxMemory > 0 {
+			redisPct = float64(info.UsedMemory) / float64(info.MaxMemory) * 100.0
+			maxLabel = fmt.Sprintf("%d MB", maxMB)
+		}
+
+		fragColor := cHex(sevGreen)
+		if info.FragRatio > 1.5 {
+			fragColor = cHex(sevRed)
+		} else if info.FragRatio > 1.2 {
+			fragColor = cHex(sevYellow)
+		}
+
+		hitColor := cHex(sevGreen)
+		if info.HitRate < 80 {
+			hitColor = cHex(sevRed)
+		} else if info.HitRate < 95 {
+			hitColor = cHex(sevYellow)
+		}
+
+		if info.MaxMemory > 0 {
+			fmt.Fprintf(a.memView,
+				"\n [%s::b]Redis[-:-:-] %s  [%s]%d[-] / %s  [%s]%.1f%%[-]  frag [%s]%.2f[-]  hit [%s]%.1f%%[-]",
+				cHex(sevColor(redisPct)),
+				themedBar(redisPct, 20), cHex(textAccent), usedMB, maxLabel,
+				cHex(sevColor(redisPct)), redisPct,
+				fragColor, info.FragRatio,
+				hitColor, info.HitRate,
+			)
+		} else {
+			fmt.Fprintf(a.memView,
+				"\n [::b]Redis[-:-:-] [%s]%d MB[-]  %s  frag [%s]%.2f[-]  hit [%s]%.1f%%[-]",
+				cHex(textAccent), usedMB, maxLabel,
+				fragColor, info.FragRatio,
+				hitColor, info.HitRate,
+			)
+		}
+	}
 }
 
 // ── Process tables ──────────────────────────────────────────────────
