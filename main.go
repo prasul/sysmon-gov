@@ -93,6 +93,7 @@ func main() {
 	wpFiles := metrics.NewWPFileCollector(*domainsFlag, fileWindow)
 	ngxErrors := metrics.NewNginxErrorCollector(*errorLogFlag)
 	liveTail := metrics.NewLiveTailer(*logPathFlag, *errorLogFlag, *liveBufferFlag)
+	analyzer := metrics.NewLogAnalyzer(*domainsFlag)
 
 	// ── Shared log reader (CPU optimization) ────────────────────
 	// Reads each access log file ONCE per tick, dispatches parsed
@@ -145,6 +146,7 @@ func main() {
 		LiveTail:     liveTail,
 		AccessReader: accessReader,
 		Redis:        redisCollector,
+		Analyzer: analyzer,
 	}
 	app := ui.New(interval, deps)
 	if err := app.Run(); err != nil {
