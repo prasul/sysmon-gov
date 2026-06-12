@@ -40,11 +40,13 @@ type Deps struct {
 	LiveTail     *metrics.LiveTailer
 	AccessReader *metrics.LogReader
 	Redis        *metrics.RedisCollector
+	Analyzer  	 *metrics.LogAnalyzer
 }
 // Page names for tview.Pages.
 const (
 	pageDashboard = "dashboard"
 	pageLive      = "live"
+	pageAnalyzer  = "analyzer"
 )
 
 // ── App ─────────────────────────────────────────────────────────────
@@ -86,6 +88,13 @@ type App struct {
 	redisKeysTable *tview.Table
 	liveTailTable  *tview.Table
 	liveFooter     *tview.TextView
+
+	// Analyzer page panels
+	anHeader     *tview.TextView
+	anDomainList *tview.Table
+	anDetailView *tview.TextView
+	anFooter     *tview.TextView
+	anSelected   int
 }
 
 func New(interval time.Duration, deps Deps) *App {
@@ -194,10 +203,15 @@ func (a *App) buildLayout() {
 	// ── Build the live page ─────────────────────────────────────
 	liveGrid := a.buildLivePage()
 
+	// ── Build the analyzer page ─────────────────────────────────
+	analyzerGrid := a.buildAnalyzerPage()
+
 	// ── Pages container ─────────────────────────────────────────
 	a.pages = tview.NewPages().
 		AddPage(pageDashboard, grid, true, true).
-		AddPage(pageLive, liveGrid, true, false)
+		AddPage(pageLive, liveGrid, true, false).
+		AddPage(pageAnalyzer, analyzerGrid, true, false)
+
 
 	// ── Global keybindings ──────────────────────────────────────
 	a.tviewApp.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -212,9 +226,23 @@ func (a *App) buildLayout() {
 			a.pages.SwitchToPage(pageLive)
 			return nil
 
+		case event.Rune() == 'a' || event.Rune() == 'A':
+			// Switch to log analyzer.
+			a.currentPage = pageAnalyzer
+			a.pages.SwitchToPage(pageAnalyzer)
+			a.tviewApp.SetFocus(a.anDomainList)
+			return nil
+
+		case event.Rune() == 'r' || event.Rune() == 'R':
+			// Force re-scan (only on analyzer page).
+			if a.currentPage == pageAnalyzer && a.deps.Analyzer != nil {
+				a.deps.Analyzer.ForceAnalyze()
+				return nil
+			}
+
 		case event.Key() == tcell.KeyEscape || event.Rune() == 'd' || event.Rune() == 'D':
-			// Switch back to dashboard (only from live page).
-			if a.currentPage == pageLive {
+			// Switch back to dashboard (from live or analyzer page).
+			if a.currentPage == pageLive || a.currentPage == pageAnalyzer {
 				a.currentPage = pageDashboard
 				a.pages.SwitchToPage(pageDashboard)
 				return nil
@@ -267,6 +295,8 @@ func (a *App) doRefresh() {
 	switch a.currentPage {
 	case pageLive:
 		a.refreshLive()
+	case pageAnalyzer:
+		a.refreshAnalyzer()
 	default:
 		a.refresh()
 	}
