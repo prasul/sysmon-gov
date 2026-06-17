@@ -7,6 +7,8 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"sysmon/metrics"
+
 )
 
 // ========================================================================
@@ -303,6 +305,34 @@ func (a *App) renderAnalyzerDetail() {
 	}
 	fmt.Fprintf(v, "\n [::b][7] BLANK USER-AGENTS[-:-:-]  [%s]%d[-]  [%s](bots rarely send UAs)[-]\n",
 		uaCol, r.BlankUACount, dim)
+
+	// ── [8] Attack signatures ──
+	if len(r.Attacks) > 0 {
+		fmt.Fprintf(v, "\n [::b][8] ATTACK SIGNATURES[-:-:-]  [%s](served 200/500 only)[-]\n", dim)
+		for _, atk := range r.Attacks {
+			// Category severity color.
+			catCol := cHex(sevYellow)
+			switch atk.Category {
+			case metrics.AttackSQLi, metrics.AttackExploit, metrics.AttackWebshell:
+				catCol = cHex(sevRed)
+			}
+			fmt.Fprintf(v, "\n   [%s::b]%s[-:-:-]  [%s]%d hits[-]\n",
+				catCol, atk.Category.String(), acc, atk.Count)
+
+			// Top offending IPs.
+			for _, ip := range atk.TopIPs {
+				fmt.Fprintf(v, "      [%s]%5d[-]  %s\n", acc, ip.Count, ip.Label)
+			}
+			// One example request (escaped — attacker controls this).
+			if len(atk.Samples) > 0 {
+				s := atk.Samples[0]
+				fmt.Fprintf(v, "      [%s]e.g.[-] %s\n",
+					dim, tview.Escape(truncate(s.URL, 60)))
+			}
+		}
+	} else {
+		fmt.Fprintf(v, "\n [::b][8] ATTACK SIGNATURES[-:-:-]  [%s]🟢 none detected[-]\n", cHex(sevGreen))
+	}
 
 	v.ScrollToBeginning()
 }

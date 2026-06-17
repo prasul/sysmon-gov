@@ -1005,12 +1005,21 @@ func (a *App) renderDisk(disks []metrics.DiskInfo) {
 
 func (a *App) renderFooter() {
 	fmt.Fprintf(a.footer.Clear(),
-		" [%s::b]q[-:-:-] quit  [%s]│[-]  [%s::b]L[-:-:-] / [%s::b]→[-:-:-] live  [%s]│[%s::b]a[-:-:-] analyzer  [%s]|[-]  [%s::b]b[-:-:-] block  [%s::b]u[-:-:-] unblock  [%s::b]:[-:-:-] services  [%s]│[-]  refresh [%s::b]%s[-:-:-]  [%s]│[-]  [%s]sysmon[-]",
-		cHex(sevYellow), cHex(textSecondary),
-		cHex(sevYellow), cHex(sevYellow), cHex(textSecondary),
-		cHex(sevRed), cHex(sevGreen), cHex(textAccent), cHex(textSecondary),
-		cHex(textAccent), a.interval,
-		cHex(textSecondary), cHex(textMuted),
+		" [%s::b]q[-:-:-] quit  [%s]│[-]  [%s::b]L[-:-:-] / [%s::b]→[-:-:-] live  [%s::b]a[-:-:-] analyzer  [%s]│[-]  [%s::b]b[-:-:-] block  [%s::b]u[-:-:-] unblock  [%s::b]:[-:-:-] services  [%s]│[-]  refresh [%s::b]%s[-:-:-]  [%s]│[-]  [%s]sysmon[-]",
+		cHex(sevYellow),      // q
+		cHex(textSecondary),  // │
+		cHex(sevYellow),      // L
+		cHex(sevYellow),      // →
+		cHex(sevYellow),      // a (analyzer)
+		cHex(textSecondary),  // │
+		cHex(sevRed),         // b
+		cHex(sevGreen),       // u
+		cHex(textAccent),     // :
+		cHex(textSecondary),  // │
+		cHex(textAccent),     // refresh interval color
+		a.interval,           // %s the interval value
+		cHex(textSecondary),  // │
+		cHex(textMuted),      // sysmon
 	)
 }
 

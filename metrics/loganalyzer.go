@@ -82,6 +82,9 @@ type DomainAnalysis struct {
 	// [8] Threat assessment
 	Threats     []ThreatFinding
 	ThreatLevel int // 0=clear, 1=warning, 2=critical
+
+	// Attack signatures (from NginxHunter port)
+	Attacks []AttackSummary
 }
 
 // CountItem is a generic count + label pair.
@@ -240,6 +243,7 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 	wpAttacks := 0
 	badCodes := 0
 	lineCount := 0
+	attackStats := newAttackStats() 
 
 	// Iterate lines by slicing the block — no scanner, no copies.
 	for pos := startIdx; pos < len(block); {
@@ -259,6 +263,8 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 
 		// ── Single-pass parse (no strings.Fields anywhere) ──
 		p := parseAccessLine(line)
+
+		attackStats.inspect(p)
 
 		if p.ip != "" {
 			ipCounts[p.ip]++
@@ -301,6 +307,7 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 	da.TopURLs = topCounts(urlCounts, 5)
 	da.TopReferrers = topCounts(refCounts, 3)
 	da.BlankUACount = blankUA
+	da.Attacks = attackStats.summarize()
 
 	// ── Unique IP delta tracking ──
 	da.UniqueIPs = len(ipCounts)
@@ -344,6 +351,23 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 			Severity: 1,
 			Message: fmt.Sprintf("unique IP count jumped by %d since last scan — possible distributed attack",
 				da.UniqueIPDelta),
+		})
+	}
+
+	// Attack signatures escalate the threat level.
+	for _, atk := range da.Attacks {
+		sev := 1
+		// SQLi, exploit, and webshell hits that the server actually
+		// served (200/500) are critical; scanners/probes are warnings.
+		if atk.Category == AttackSQLi ||
+			atk.Category == AttackExploit ||
+			atk.Category == AttackWebshell {
+			sev = 2
+		}
+		da.Threats = append(da.Threats, ThreatFinding{
+			Severity: sev,
+			Message: fmt.Sprintf("%s: %d hits from %d IPs",
+				atk.Category, atk.Count, len(atk.TopIPs)),
 		})
 	}
 
