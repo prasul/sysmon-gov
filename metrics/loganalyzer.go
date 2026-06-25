@@ -74,6 +74,15 @@ type DomainAnalysis struct {
 	TopReferrers []CountItem // [6] referrers
 	BlankUACount int         // [7] blank user agents
 
+	// POST hot spots — IP→URL pairs receiving heavy POST traffic.
+	// Surfaces brute-force/spam targets (wp-login.php, xmlrpc.php).
+	TopPosts  []PostHit
+	PostTotal int
+
+
+	// Attack signatures (from NginxHunter port)
+	Attacks []AttackSummary
+
 	// IP delta tracking (new vs bash script)
 	UniqueIPs     int
 	UniqueIPDelta int  // change since previous run; 0 on first run
@@ -82,15 +91,19 @@ type DomainAnalysis struct {
 	// [8] Threat assessment
 	Threats     []ThreatFinding
 	ThreatLevel int // 0=clear, 1=warning, 2=critical
-
-	// Attack signatures (from NginxHunter port)
-	Attacks []AttackSummary
 }
 
 // CountItem is a generic count + label pair.
 type CountItem struct {
 	Count int
 	Label string
+}
+
+// PostHit records POST volume to a specific IP+URL combination.
+type PostHit struct {
+	Count int
+	IP    string
+	URL   string
 }
 
 // ThreatFinding is a single threat assessment result.
@@ -239,11 +252,11 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 	statusCounts := make(map[string]int, 16)
 	urlCounts := make(map[string]int, 1024)
 	refCounts := make(map[string]int, 256)
+	postCounts := make(map[string]*PostHit, 256) // key: ip+"\x00"+url
 	blankUA := 0
 	wpAttacks := 0
 	badCodes := 0
 	lineCount := 0
-	attackStats := newAttackStats() 
 
 	// Iterate lines by slicing the block — no scanner, no copies.
 	for pos := startIdx; pos < len(block); {
@@ -264,8 +277,6 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 		// ── Single-pass parse (no strings.Fields anywhere) ──
 		p := parseAccessLine(line)
 
-		attackStats.inspect(p)
-
 		if p.ip != "" {
 			ipCounts[p.ip]++
 		}
@@ -274,6 +285,16 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 		}
 		if p.method != "" {
 			methodCounts[p.method]++
+			// Track POST volume per IP+URL to surface brute-force /
+			// spam targets.  Key joins ip and url with a NUL byte.
+			if p.method == "POST" && p.ip != "" && p.url != "" {
+				key := p.ip + "\x00" + p.url
+				if h, ok := postCounts[key]; ok {
+					h.Count++
+				} else {
+					postCounts[key] = &PostHit{Count: 1, IP: p.ip, URL: p.url}
+				}
+			}
 		}
 		if p.url != "" {
 			urlCounts[p.url]++
@@ -307,7 +328,26 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 	da.TopURLs = topCounts(urlCounts, 5)
 	da.TopReferrers = topCounts(refCounts, 3)
 	da.BlankUACount = blankUA
-	da.Attacks = attackStats.summarize()
+
+	// ── POST hot spots ──
+	// Flatten the IP+URL map, sort by volume, keep top 5.  Labels
+	// are cloned so they don't pin the 4MB block.
+	posts := make([]PostHit, 0, len(postCounts))
+	for _, h := range postCounts {
+		da.PostTotal += h.Count
+		posts = append(posts, PostHit{
+			Count: h.Count,
+			IP:    strings.Clone(h.IP),
+			URL:   strings.Clone(h.URL),
+		})
+	}
+	sort.Slice(posts, func(i, j int) bool {
+		return posts[i].Count > posts[j].Count
+	})
+	if len(posts) > 5 {
+		posts = posts[:5]
+	}
+	da.TopPosts = posts
 
 	// ── Unique IP delta tracking ──
 	da.UniqueIPs = len(ipCounts)
@@ -354,21 +394,23 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 		})
 	}
 
-	// Attack signatures escalate the threat level.
-	for _, atk := range da.Attacks {
-		sev := 1
-		// SQLi, exploit, and webshell hits that the server actually
-		// served (200/500) are critical; scanners/probes are warnings.
-		if atk.Category == AttackSQLi ||
-			atk.Category == AttackExploit ||
-			atk.Category == AttackWebshell {
-			sev = 2
+	// Concentrated POST flood from a single IP to one endpoint —
+	// the classic brute-force / form-spam signature.
+	if len(da.TopPosts) > 0 {
+		worst := da.TopPosts[0]
+		if worst.Count > 100 {
+			da.Threats = append(da.Threats, ThreatFinding{
+				Severity: 2,
+				Message: fmt.Sprintf("IP %s sent %d POSTs to %s — brute force / spam",
+					worst.IP, worst.Count, truncForThreat(worst.URL)),
+			})
+		} else if worst.Count > 30 {
+			da.Threats = append(da.Threats, ThreatFinding{
+				Severity: 1,
+				Message: fmt.Sprintf("IP %s sent %d POSTs to %s",
+					worst.IP, worst.Count, truncForThreat(worst.URL)),
+			})
 		}
-		da.Threats = append(da.Threats, ThreatFinding{
-			Severity: sev,
-			Message: fmt.Sprintf("%s: %d hits from %d IPs",
-				atk.Category, atk.Count, len(atk.TopIPs)),
-		})
 	}
 
 	for _, t := range da.Threats {
@@ -378,6 +420,14 @@ func (la *LogAnalyzer) analyzeDomain(domain string, block string) DomainAnalysis
 	}
 
 	return da
+}
+
+// truncForThreat shortens a URL for threat messages.
+func truncForThreat(url string) string {
+	if len(url) <= 40 {
+		return url
+	}
+	return url[:39] + "…"
 }
 
 // ── Single-pass line parser ─────────────────────────────────────────
