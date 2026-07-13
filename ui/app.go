@@ -40,8 +40,15 @@ type Deps struct {
 	LiveTail     *metrics.LiveTailer
 	AccessReader *metrics.LogReader
 	Redis        *metrics.RedisCollector
-	Analyzer  	 *metrics.LogAnalyzer
+	Analyzer     *metrics.LogAnalyzer
+
+	// History backs the "press s for a report" feature — a rolling
+	// in-memory buffer of samples used to draw the report's timeline
+	// chart. ReportDir is where generated reports are written.
+	History   *metrics.History
+	ReportDir string
 }
+
 // Page names for tview.Pages.
 const (
 	pageDashboard = "dashboard"
@@ -58,6 +65,14 @@ type App struct {
 	blinkTick   int
 	currentPage string // tracks which page is visible
 	pages       *tview.Pages
+	reportDir   string
+
+	// snap is the most recently rendered dashboard data, cached so
+	// pressing 's' can build a report instantly. Written from the
+	// refresh goroutine, read from the tview input-capture handler —
+	// guarded by snapMu since those may run on different goroutines.
+	snapMu sync.Mutex
+	snap   dashSnapshot
 
 	// Dashboard panels
 	header       *tview.TextView
@@ -104,6 +119,7 @@ func New(interval time.Duration, deps Deps) *App {
 		deps:        deps,
 		currentPage: pageDashboard,
 		tracker:     NewActionTracker(),
+		reportDir:   deps.ReportDir,
 	}
 	a.buildLayout()
 	return a
@@ -271,6 +287,12 @@ func (a *App) buildLayout() {
 			ShowUnblockIPForm(a.tviewApp, a.pages, a.tracker, nil)
 			return nil
 
+		case event.Rune() == 's' || event.Rune() == 'S':
+			// Generate an HTML load report from the most recent
+			// snapshot + history buffer. Works from any page.
+			a.generateReport()
+			return nil
+
 		case event.Rune() == ':':
 			ShowCommandPalette(a.tviewApp, a.pages, nil)
 			return nil
@@ -312,12 +334,13 @@ func (a *App) refresh() {
 	// no locks needed between goroutines.
 
 	var (
-		host   *metrics.HostInfo
-		load   *metrics.LoadAvg
-		mem    *metrics.MemoryInfo
-		disks  []metrics.DiskInfo
-		topCPU []metrics.ProcessInfo
-		topMem []metrics.ProcessInfo
+		host     *metrics.HostInfo
+		load     *metrics.LoadAvg
+		mem      *metrics.MemoryInfo
+		disks    []metrics.DiskInfo
+		topCPU   []metrics.ProcessInfo
+		topMem   []metrics.ProcessInfo
+		cpuUsage []metrics.CPUUsage
 
 		topPaths  []metrics.NginxPathHit
 		topIPs    []metrics.NginxIPHit
@@ -351,6 +374,7 @@ func (a *App) refresh() {
 		mem, _ = metrics.GetMemoryInfo()
 		disks, _ = metrics.GetDiskUsage()
 		topCPU, topMem, _ = metrics.GetTopProcesses(maxProcs)
+		cpuUsage, _ = metrics.GetCPUUsage()
 	}()
 
 	// ── Goroutine 2: Log collectors ─────────────────────────────
@@ -428,6 +452,21 @@ func (a *App) refresh() {
 	// ── Barrier ─────────────────────────────────────────────────
 	// Block until all four goroutines finish.
 	wg.Wait()
+
+	// ── Extract aggregate CPU% for the history buffer / reports ──
+	cpuPct := 0.0
+	for _, c := range cpuUsage {
+		if c.Name == "cpu" {
+			cpuPct = c.Percent
+			break
+		}
+	}
+
+	// ── Cache this tick + append to history (report feature) ─────
+	a.recordSnapshot(host, load, mem, disks, cpuPct, topCPU, topMem,
+		topPaths, topIPs, totalReqs, botHits, botTotal,
+		wpHits, wpTotal, phpEnts, phpTotal, ngxErrs, errTotal,
+		mysqlStats, fileChanges, fileTotal)
 
 	// ── Render (single QueueUpdateDraw) ─────────────────────────
 	a.tviewApp.QueueUpdateDraw(func() {
@@ -1005,7 +1044,7 @@ func (a *App) renderDisk(disks []metrics.DiskInfo) {
 
 func (a *App) renderFooter() {
 	fmt.Fprintf(a.footer.Clear(),
-		" [%s::b]q[-:-:-] quit  [%s]│[-]  [%s::b]L[-:-:-] / [%s::b]→[-:-:-] live  [%s::b]a[-:-:-] analyzer  [%s]│[-]  [%s::b]b[-:-:-] block  [%s::b]u[-:-:-] unblock  [%s::b]:[-:-:-] services  [%s]│[-]  refresh [%s::b]%s[-:-:-]  [%s]│[-]  [%s]sysmon[-]",
+		" [%s::b]q[-:-:-] quit  [%s]│[-]  [%s::b]L[-:-:-] / [%s::b]→[-:-:-] live  [%s::b]a[-:-:-] analyzer  [%s]│[-]  [%s::b]b[-:-:-] block  [%s::b]u[-:-:-] unblock  [%s::b]:[-:-:-] services  [%s::b]s[-:-:-] report  [%s]│[-]  refresh [%s::b]%s[-:-:-]  [%s]│[-]  [%s]sysmon[-]",
 		cHex(sevYellow),      // q
 		cHex(textSecondary),  // │
 		cHex(sevYellow),      // L
@@ -1015,6 +1054,7 @@ func (a *App) renderFooter() {
 		cHex(sevRed),         // b
 		cHex(sevGreen),       // u
 		cHex(textAccent),     // :
+		cHex(textAccent),     // s (report)
 		cHex(textSecondary),  // │
 		cHex(textAccent),     // refresh interval color
 		a.interval,           // %s the interval value

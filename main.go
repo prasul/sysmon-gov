@@ -8,6 +8,7 @@
 //	q / Ctrl-C    Quit
 //	L / →         Switch to Live View
 //	Esc / D / ←   Switch to Dashboard
+//	s             Generate an HTML load report (see -report-out)
 package main
 
 import (
@@ -63,6 +64,12 @@ func main() {
 		"MySQL unix socket (overrides .my.cnf)")
 	mysqlCnf := flag.String("mysql-cnf", "",
 		"Path to .my.cnf (auto-detected if empty)")
+
+	// Report flags
+	reportOutFlag := flag.String("report-out", ".",
+		"Directory where HTML reports are written (press 's' in the TUI to generate one)")
+	historyWindowFlag := flag.Duration("history-window", 30*time.Minute,
+		"How much in-memory history to retain for report timelines (e.g. 30m, 1h)")
 
 	flag.Parse()
 
@@ -134,6 +141,9 @@ func main() {
 	// ── Redis ───────────────────────────────────────────────────
 	redisCollector := metrics.NewRedisCollector("127.0.0.1", "6379")
 
+	// ── History buffer (for on-demand HTML reports) ─────────────
+	history := metrics.NewHistory(*historyWindowFlag)
+
 	// ── Launch ──────────────────────────────────────────────────
 	deps := ui.Deps{
 		Nginx:        nginx,
@@ -146,7 +156,9 @@ func main() {
 		LiveTail:     liveTail,
 		AccessReader: accessReader,
 		Redis:        redisCollector,
-		Analyzer: analyzer,
+		Analyzer:     analyzer,
+		History:      history,
+		ReportDir:    *reportOutFlag,
 	}
 	app := ui.New(interval, deps)
 	if err := app.Run(); err != nil {
