@@ -114,10 +114,23 @@ type reportView struct {
 	PHPBarSVG   template.HTML
 }
 
+// maxMySQLReportRows caps how many MySQL processes the report renders.
+// Unlike the dashboard's other panels (all capped at 8 by the
+// collectors before they ever reach the UI), MySQLStats.Processes is
+// the full, uncapped list of active queries — during a real
+// connection storm that could be hundreds of rows.
+const maxMySQLReportRows = 25
+
 func buildView(s Snapshot) reportView {
 	numCPU := runtime.NumCPU()
 	if numCPU < 1 {
 		numCPU = 1
+	}
+
+	if s.MySQL != nil && len(s.MySQL.Processes) > maxMySQLReportRows {
+		trimmed := *s.MySQL
+		trimmed.Processes = s.MySQL.Processes[:maxMySQLReportRows]
+		s.MySQL = &trimmed
 	}
 
 	var times []string

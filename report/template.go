@@ -246,6 +246,7 @@ const reportTemplate = `<!DOCTYPE html>
   {{if .MySQL}}
   <div class="card">
     <h2>MySQL <span style="color:var(--muted);font-weight:400;">({{.MySQL.TotalConnections}} conn · {{.MySQL.ActiveQueries}} active · {{printf "%.0f" .MySQL.QueriesPerSec}} qps · {{.MySQL.SlowQueries}} slow)</span></h2>
+    {{if gt (len .MySQL.Processes) 24}}<p class="chart-caption">showing the {{len .MySQL.Processes}} longest-running of {{.MySQL.ActiveQueries}} active queries</p>{{end}}
     {{if .MySQL.Processes}}
     <table>
       <tr><th>ID</th><th>User</th><th>DB</th><th class="num">Time</th><th>State</th><th>Query</th></tr>

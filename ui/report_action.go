@@ -142,73 +142,108 @@ func (a *App) recordSnapshot(
 // plus the in-memory history buffer, writes it to a.reportDir, and
 // flashes the result in the footer. Bound to the 's' key from any
 // page.
+//
+// IMPORTANT: this is invoked synchronously from tview's SetInputCapture
+// callback, which runs ON tview's single event-loop goroutine (the same
+// goroutine that runs Application.Run()). Calling QueueUpdateDraw from
+// that goroutine deadlocks the whole app: QueueUpdateDraw sends a
+// closure down a channel that only the event loop itself drains, and
+// the event loop can't get back to draining it while it's still up the
+// call stack inside this handler. That's why "s" froze the UI —
+// flashFooter() (which uses QueueUpdateDraw) was being called directly
+// from here.
+//
+// The fix: do the actual work (snapshot copy is cheap and fine inline,
+// but file I/O + template rendering is not) in a background goroutine,
+// and use setFooterMessage — a direct, non-queued mutation — for any
+// UI update that happens on this goroutine. flashFooter (QueueUpdateDraw)
+// is only ever called from the background goroutine below, which is
+// exactly what it's designed for.
 func (a *App) generateReport() {
 	a.snapMu.Lock()
 	snap := a.snap
 	a.snapMu.Unlock()
 
 	if snap.Time.IsZero() {
-		a.flashFooter(" collecting data — try again in a couple seconds ", sevYellow)
+		a.setFooterMessage(" collecting data — try again in a couple seconds ", sevYellow)
 		return
 	}
 
-	var samples []metrics.HistorySample
-	if a.deps.History != nil {
-		samples = a.deps.History.Samples()
-	}
+	// Immediate feedback so the keypress doesn't feel like a no-op
+	// while the goroutine below does file I/O.
+	a.setFooterMessage(" generating report… ", textAccent)
 
-	hostName := "unknown-host"
-	if snap.Host != nil && snap.Host.Hostname != "" {
-		hostName = snap.Host.Hostname
-	}
+	go func() {
+		var samples []metrics.HistorySample
+		if a.deps.History != nil {
+			samples = a.deps.History.Samples()
+		}
 
-	in := report.Snapshot{
-		GeneratedAt: time.Now(),
-		Hostname:    hostName,
-		Interval:    a.interval,
+		hostName := "unknown-host"
+		if snap.Host != nil && snap.Host.Hostname != "" {
+			hostName = snap.Host.Hostname
+		}
 
-		Load:       snap.Load,
-		Mem:        snap.Mem,
-		Disks:      snap.Disks,
-		CPUPercent: snap.CPUPercent,
+		in := report.Snapshot{
+			GeneratedAt: time.Now(),
+			Hostname:    hostName,
+			Interval:    a.interval,
 
-		TopCPU: snap.TopCPU,
-		TopMem: snap.TopMem,
+			Load:       snap.Load,
+			Mem:        snap.Mem,
+			Disks:      snap.Disks,
+			CPUPercent: snap.CPUPercent,
 
-		NginxPaths: snap.NginxPaths,
-		NginxIPs:   snap.NginxIPs,
-		NginxTotal: snap.NginxTotal,
+			TopCPU: snap.TopCPU,
+			TopMem: snap.TopMem,
 
-		Bots:     snap.Bots,
-		BotTotal: snap.BotTotal,
+			NginxPaths: snap.NginxPaths,
+			NginxIPs:   snap.NginxIPs,
+			NginxTotal: snap.NginxTotal,
 
-		MySQL: snap.MySQL,
+			Bots:     snap.Bots,
+			BotTotal: snap.BotTotal,
 
-		WPLogin: snap.WPLogin,
-		WPTotal: snap.WPTotal,
+			MySQL: snap.MySQL,
 
-		PHPSlow:  snap.PHPSlow,
-		PHPTotal: snap.PHPTotal,
+			WPLogin: snap.WPLogin,
+			WPTotal: snap.WPTotal,
 
-		NgxErrors: snap.NgxErrors,
-		ErrTotal:  snap.ErrTotal,
+			PHPSlow:  snap.PHPSlow,
+			PHPTotal: snap.PHPTotal,
 
-		FileChanges: snap.FileChanges,
-		FileTotal:   snap.FileTotal,
+			NgxErrors: snap.NgxErrors,
+			ErrTotal:  snap.ErrTotal,
 
-		History: samples,
-	}
+			FileChanges: snap.FileChanges,
+			FileTotal:   snap.FileTotal,
 
-	path, err := report.Generate(in, a.reportDir)
-	if err != nil {
-		a.flashFooter(fmt.Sprintf(" ✗ report failed: %v ", err), sevRed)
-		return
-	}
-	a.flashFooter(fmt.Sprintf(" ✓ report saved → %s ", path), sevGreen)
+			History: samples,
+		}
+
+		path, err := report.Generate(in, a.reportDir)
+		if err != nil {
+			a.flashFooter(fmt.Sprintf(" ✗ report failed: %v ", err), sevRed)
+			return
+		}
+		a.flashFooter(fmt.Sprintf(" ✓ report saved → %s ", path), sevGreen)
+	}()
+}
+
+// setFooterMessage overwrites the footer immediately. Only call this
+// from tview's main goroutine (e.g. directly inside a SetInputCapture
+// handler) — it mutates the primitive in place with no locking, which
+// is safe there and only there.
+func (a *App) setFooterMessage(msg string, color tcell.Color) {
+	fmt.Fprintf(a.footer.Clear(), "[%s::b]%s[-:-:-]", cHex(color), msg)
+	a.tviewApp.Draw()
 }
 
 // flashFooter temporarily overrides the footer with a status message,
-// then restores the normal footer after a few seconds.
+// then restores the normal footer after a few seconds. Safe to call
+// from ANY goroutine except tview's own event-loop goroutine — it goes
+// through QueueUpdateDraw, which needs a goroutine other than the one
+// running Application.Run() to be able to marshal the update across.
 func (a *App) flashFooter(msg string, color tcell.Color) {
 	a.tviewApp.QueueUpdateDraw(func() {
 		fmt.Fprintf(a.footer.Clear(), "[%s::b]%s[-:-:-]", cHex(color), msg)
