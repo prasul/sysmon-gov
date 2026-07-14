@@ -74,6 +74,14 @@ type App struct {
 	snapMu sync.Mutex
 	snap   dashSnapshot
 
+	// reportQueue decouples report generation from tview entirely.
+	// The 's' keybinding only ever does a cheap, non-blocking send
+	// onto this channel; reportWorker() drains it on its own
+	// goroutine (started once in Run()) and does all the actual disk
+	// I/O and HTML rendering there. Buffered so a couple of quick
+	// repeated presses queue up instead of getting dropped.
+	reportQueue chan reportJob
+
 	// Dashboard panels
 	header       *tview.TextView
 	loadView     *tview.TextView
@@ -120,6 +128,7 @@ func New(interval time.Duration, deps Deps) *App {
 		currentPage: pageDashboard,
 		tracker:     NewActionTracker(),
 		reportDir:   deps.ReportDir,
+		reportQueue: make(chan reportJob, 4),
 	}
 	a.buildLayout()
 	return a
@@ -127,6 +136,7 @@ func New(interval time.Duration, deps Deps) *App {
 
 func (a *App) Run() error {
 	go a.refreshLoop()
+	go a.reportWorker()
 	return a.tviewApp.Run()
 }
 

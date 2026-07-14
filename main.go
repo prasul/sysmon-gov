@@ -66,8 +66,9 @@ func main() {
 		"Path to .my.cnf (auto-detected if empty)")
 
 	// Report flags
-	reportOutFlag := flag.String("report-out", ".",
-		"Directory where HTML reports are written (press 's' in the TUI to generate one)")
+	reportOutFlag := flag.String("report-out", "/var/log/sysmon-log",
+		"Directory where reports are written (press 's' in the TUI to generate one) — "+
+			"gets both the raw JSON snapshot (sysmon-raw-*.json) and the rendered HTML (sysmon-report-*.html)")
 	historyWindowFlag := flag.Duration("history-window", 30*time.Minute,
 		"How much in-memory history to retain for report timelines (e.g. 30m, 1h)")
 
