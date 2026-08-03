@@ -106,6 +106,7 @@ type App struct {
 	connSummary    *tview.TextView
 	synFloodTable  *tview.Table
 	topConnTable   *tview.Table
+	outboundTable  *tview.Table
 	liveMysqlTable *tview.Table
 	redisInfoView  *tview.TextView
 	redisKeysTable *tview.Table

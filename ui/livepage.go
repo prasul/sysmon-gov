@@ -26,6 +26,10 @@ func (a *App) buildLivePage() tview.Primitive {
 	a.topConnTable = styledTable()
 	applyBorder(a.topConnTable.Box, " ◆ Top Connections ", borderWeb, titleWeb)
 
+	// NEW: outbound connection monitor (server → remote).
+	a.outboundTable = styledTable()
+	applyBorder(a.outboundTable.Box, " ⬆ Outbound Connections ", borderWeb, titleWeb)
+
 	a.liveMysqlTable = styledTable()
 	applyBorder(a.liveMysqlTable.Box, " ◉ MySQL Live ", borderData, titleData)
 
@@ -42,15 +46,16 @@ func (a *App) buildLivePage() tview.Primitive {
 	a.liveFooter.SetBackgroundColor(barBg)
 
 	// ── Grid ────────────────────────────────────────────────────
-	// Row 0: header                  (1)
-	// Row 1: conn summary            (4)
-	// Row 2: synFlood + topConn      (10)
-	// Row 3: mysql live              (10)
-	// Row 4: redis info + redis keys (9)
-	// Row 5: live tail               (flex)
-	// Row 6: footer                  (1)
+	// Row 0: header                    (1)
+	// Row 1: conn summary              (4)
+	// Row 2: synFlood + topConn        (10)
+	// Row 3: outbound (full width)     (9)
+	// Row 4: mysql live                (10)
+	// Row 5: redis info + redis keys   (9)
+	// Row 6: live tail                 (flex)
+	// Row 7: footer                    (1)
 	grid := tview.NewGrid().
-		SetRows(1, 4, 10, 10, 9, 0, 1).
+		SetRows(1, 4, 10, 9, 10, 9, 0, 1).
 		SetColumns(0, 0).
 		SetBorders(false)
 
@@ -58,11 +63,12 @@ func (a *App) buildLivePage() tview.Primitive {
 	grid.AddItem(a.connSummary, 1, 0, 1, 2, 0, 0, false)
 	grid.AddItem(a.synFloodTable, 2, 0, 1, 1, 0, 0, false)
 	grid.AddItem(a.topConnTable, 2, 1, 1, 1, 0, 0, false)
-	grid.AddItem(a.liveMysqlTable, 3, 0, 1, 2, 0, 0, false) // full width
-	grid.AddItem(a.redisInfoView, 4, 0, 1, 1, 0, 0, false)  // left half
-	grid.AddItem(a.redisKeysTable, 4, 1, 1, 1, 0, 0, false) // right half
-	grid.AddItem(a.liveTailTable, 5, 0, 1, 2, 0, 0, false)
-	grid.AddItem(a.liveFooter, 6, 0, 1, 2, 0, 0, false)
+	grid.AddItem(a.outboundTable, 3, 0, 1, 2, 0, 0, false)  // full width
+	grid.AddItem(a.liveMysqlTable, 4, 0, 1, 2, 0, 0, false) // full width
+	grid.AddItem(a.redisInfoView, 5, 0, 1, 1, 0, 0, false)  // left half
+	grid.AddItem(a.redisKeysTable, 5, 1, 1, 1, 0, 0, false) // right half
+	grid.AddItem(a.liveTailTable, 6, 0, 1, 2, 0, 0, false)
+	grid.AddItem(a.liveFooter, 7, 0, 1, 2, 0, 0, false)
 
 	return grid
 }
@@ -73,6 +79,9 @@ func (a *App) refreshLive() {
 	a.blinkTick++
 
 	netStats, _ := metrics.GetNetworkStats(12)
+
+	// Outbound connection stats (server → remote pileup detection).
+	outStats, _ := metrics.GetOutboundStats(10)
 
 	// MySQL — collect fresh data on the live page too.
 	var mysqlStats *metrics.MySQLStats
@@ -99,6 +108,7 @@ func (a *App) refreshLive() {
 		a.renderConnSummary(netStats)
 		a.renderSynFlood(netStats)
 		a.renderTopConns(netStats)
+		a.renderOutbound(outStats)
 		a.renderLiveMySQL(mysqlStats)
 		a.renderRedisInfo()
 		a.renderRedisKeys()
@@ -232,6 +242,79 @@ func (a *App) renderTopConns(stats *metrics.NetworkStats) {
 	}
 }
 
+// ── Outbound Connections (server → remote pileup detection) ─────────
+
+func (a *App) renderOutbound(s *metrics.OutboundStats) {
+	a.outboundTable.Clear()
+
+	if s == nil {
+		setHeaders(a.outboundTable, "")
+		a.outboundTable.SetCell(1, 0, cellMuted("  reading outbound state…"))
+		return
+	}
+
+	// Title + border reflect stress state.
+	if s.IsUnderStress {
+		bc := accentLive
+		title := " ⬆ OUTBOUND STRESS ● "
+		if a.blinkTick%2 == 1 {
+			bc = accentLiveDim
+			title = " ⬆ OUTBOUND STRESS ○ "
+		}
+		a.outboundTable.SetBorderColor(bc).SetTitle(title)
+	} else {
+		a.outboundTable.SetBorderColor(borderWeb).
+			SetTitle(" ⬆ Outbound Connections ")
+	}
+
+	setHeaders(a.outboundTable, " Remote", "Port", "Total", "Estab", "Stuck", "Process")
+
+	if len(s.TopRemotes) == 0 {
+		a.outboundTable.SetCell(1, 0, cellMuted("  no significant outbound traffic"))
+		return
+	}
+
+	for i, r := range s.TopRemotes {
+		row := i + 1
+
+		// Concern color: stuck OR high established both flag.
+		estabColor := textPrimary
+		if r.Established >= 25 {
+			estabColor = sevRed
+		} else if r.Established >= 10 {
+			estabColor = sevYellow
+		}
+
+		stuckColor := sevGreen
+		if r.Stuck >= 40 {
+			stuckColor = sevRed
+		} else if r.Stuck >= 15 {
+			stuckColor = sevYellow
+		}
+
+		// Busiest owning process.
+		proc := ""
+		best := 0
+		for name, n := range r.Procs {
+			if n > best {
+				best = n
+				proc = fmt.Sprintf("%s ×%d", name, n)
+			}
+		}
+
+		a.outboundTable.SetCell(row, 0, cellPrimary(" "+r.RemoteIP))
+		a.outboundTable.SetCell(row, 1, cellDim(fmt.Sprintf("%d", r.RemotePort)))
+		a.outboundTable.SetCell(row, 2, cellAccent(fmt.Sprintf("%d", r.Total)))
+		a.outboundTable.SetCell(row, 3,
+			tview.NewTableCell(fmt.Sprintf("%d", r.Established)).
+				SetTextColor(estabColor).SetAttributes(tcell.AttrBold))
+		a.outboundTable.SetCell(row, 4,
+			tview.NewTableCell(fmt.Sprintf("%d", r.Stuck)).
+				SetTextColor(stuckColor).SetAttributes(tcell.AttrBold))
+		a.outboundTable.SetCell(row, 5, cellDim(proc))
+	}
+}
+
 // ── MySQL Live ──────────────────────────────────────────────────────
 
 func (a *App) renderLiveMySQL(stats *metrics.MySQLStats) {
@@ -258,7 +341,6 @@ func (a *App) renderLiveMySQL(stats *metrics.MySQLStats) {
 		return
 	}
 
-	// Rich title.
 	a.liveMysqlTable.SetTitle(fmt.Sprintf(
 		" ◉ MySQL Live  [%d conn / %d active / %.0f qps / %d slow] ",
 		stats.TotalConnections, stats.ActiveQueries,
@@ -325,11 +407,9 @@ func (a *App) renderRedisInfo() {
 
 	info := a.deps.Redis.GetInfo()
 
-	// Title with key count.
 	a.redisInfoView.Box.SetTitle(fmt.Sprintf(
 		" ◈ Redis Memory  [%s keys] ", fmtCount64(info.TotalKeys)))
 
-	// Fragmentation color.
 	fragColor := cHex(sevGreen)
 	if info.FragRatio > 1.5 {
 		fragColor = cHex(sevRed)
@@ -337,7 +417,6 @@ func (a *App) renderRedisInfo() {
 		fragColor = cHex(sevYellow)
 	}
 
-	// Hit rate color.
 	hitColor := cHex(sevGreen)
 	if info.HitRate < 80 {
 		hitColor = cHex(sevRed)
@@ -345,7 +424,6 @@ func (a *App) renderRedisInfo() {
 		hitColor = cHex(sevYellow)
 	}
 
-	// Memory bar.
 	usedPct := 0.0
 	if info.MaxMemory > 0 {
 		usedPct = float64(info.UsedMemory) / float64(info.MaxMemory) * 100.0
@@ -384,7 +462,6 @@ func (a *App) renderRedisInfo() {
 			memColor, usedPct, plainBar(usedPct, 20))
 	}
 
-	// Keyspace summary.
 	for _, db := range info.Databases {
 		fmt.Fprintf(a.redisInfoView,
 			"\n [%s]%s[-] %s keys  [%s]%s expires[-]",
@@ -407,7 +484,6 @@ func (a *App) renderRedisKeys() {
 
 	ks := a.deps.Redis.GetKeyStats()
 
-	// Show scanning state.
 	if a.deps.Redis.IsScanning() {
 		scanTitle := " ◈ Redis Keys  [scanning…] "
 		if a.blinkTick%2 == 0 {
@@ -426,7 +502,6 @@ func (a *App) renderRedisKeys() {
 		return
 	}
 
-	// Show top prefixes by memory (most useful for WordPress/cache diagnosis).
 	setHeaders(a.redisKeysTable, " #", "Prefix", "Memory", "Keys", "Largest Key")
 
 	limit := 8
@@ -453,7 +528,6 @@ func (a *App) renderRedisKeys() {
 
 		a.redisKeysTable.SetCell(r, 3, cellDim(fmt.Sprintf("%d", p.Count)))
 
-		// Find the largest key for this prefix.
 		largestKey := ""
 		for _, k := range ks.TopKeys {
 			if k.Prefix == p.Prefix {
