@@ -141,6 +141,9 @@ func main() {
 	mysql := metrics.NewMySQLCollectorWithCnf(dsn, cnfPathForFallback)
 	// ── Redis ───────────────────────────────────────────────────
 	redisCollector := metrics.NewRedisCollector("127.0.0.1", "6379")
+	
+	allowlist := metrics.NewAllowlist("/etc/sysmon/allowlist.txt")
+	ui.SetAllowlist(allowlist)
 
 	// ── History buffer (for on-demand HTML reports) ─────────────
 	history := metrics.NewHistory(*historyWindowFlag)

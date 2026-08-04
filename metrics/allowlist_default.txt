@@ -1,0 +1,33 @@
+# ============================================================================
+#  sysmon allowlist — IPs that must NEVER be blocked
+# ============================================================================
+#
+#  Location: /etc/sysmon/allowlist.txt
+#
+#  Format: one entry per line
+#      <IP or CIDR>    <optional label>
+#
+#  - Lines starting with # are comments.
+#  - Blank lines are ignored.
+#  - If no label is given, "allowlisted (never block)" is used.
+#  - Both single IPs and CIDR ranges are supported.
+#  - Edit this file anytime — sysmon re-reads it automatically when it
+#    changes (no restart needed).
+#
+#  When sysmon sees one of these IPs it shows the label instead of
+#  offering to block it, and any block attempt is refused.
+#
+# ----------------------------------------------------------------------------
+ 
+# ── BigScoots monitoring ──
+149.56.101.50            BigScoots monitoring IP
+149.56.96.39             BigScoots monitoring IP
+149.56.102.86            BigScoots monitoring IP
+51.222.136.175           BigScoots monitoring IP
+15.204.219.92           BigScoots monitoring IP
+ 
+# ── Add your own below ──
+# Examples:
+# 203.0.113.7            Office IP
+# 198.51.100.0/24        Office network
+# 8.8.8.8                Google DNS (health checks)

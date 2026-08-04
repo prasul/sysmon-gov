@@ -865,7 +865,12 @@ func (a *App) renderWPLogin(hits []metrics.WPLoginHit, total int, live bool) {
 		a.wpLoginTable.SetCell(r, 0, cellDim(fmt.Sprintf(" %d", r)))
 		a.wpLoginTable.SetCell(r, 1, cellHeat(fmt.Sprintf("%d", h.Count), h.Count, hits[0].Count))
 		a.wpLoginTable.SetCell(r, 2, cellAccent(truncate(h.Domain, 18)))
-		a.wpLoginTable.SetCell(r, 3, cellPrimary(h.IP))
+		if label := ipLabel(h.IP); label != "" {
+			a.wpLoginTable.SetCell(r, 3,
+				tview.NewTableCell(h.IP+label).SetTextColor(sevGreen))
+		} else {
+			a.wpLoginTable.SetCell(r, 3, cellPrimary(h.IP))
+		}
 
 		cc := textMuted
 		if h.Country != "—" {

@@ -31,7 +31,26 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"sysmon/metrics"
 )
+// allowlist is the never-block list, set once at startup from main.
+var allowlist *metrics.Allowlist
+
+// SetAllowlist installs the never-block list (called from main).
+func SetAllowlist(al *metrics.Allowlist) {
+	allowlist = al
+}
+
+// ipLabel returns a short allowlist tag for an IP, or "" if not listed.
+func ipLabel(ip string) string {
+	if allowlist == nil {
+		return ""
+	}
+	if ok, label := allowlist.Lookup(ip); ok {
+		return " ✓ " + label
+	}
+	return ""
+}
 
 // ========================================================================
 //  CONSTANTS
@@ -486,6 +505,16 @@ func showIPForm(app *tview.Application, pages *tview.Pages, tracker *ActionTrack
 					" [red]REFUSED:[-] %s is your SSH session IP (%s)\n Cannot block yourself!",
 					ip, selfIP))
 				return nil
+			}
+
+			// Allowlist protection — never block monitoring IPs etc.
+			if mode == "block" && allowlist != nil {
+				if ok, label := allowlist.Lookup(ip); ok {
+					statusView.SetText(fmt.Sprintf(
+						" [yellow]REFUSED:[-] %s is allowlisted\n [green]%s[-] — will not be blocked",
+						ip, label))
+					return nil
+				}
 			}
 
 			// Show confirmation
