@@ -41,6 +41,7 @@ type Deps struct {
 	AccessReader *metrics.LogReader
 	Redis        *metrics.RedisCollector
 	Analyzer     *metrics.LogAnalyzer
+	LiveTraffic  *metrics.LiveTrafficAnalyzer 
 
 	// History backs the "press s for a report" feature — a rolling
 	// in-memory buffer of samples used to draw the report's timeline
@@ -107,6 +108,10 @@ type App struct {
 	synFloodTable  *tview.Table
 	topConnTable   *tview.Table
 	outboundTable  *tview.Table
+	floodTable      *tview.Table
+	domainRateTable *tview.Table
+	codesView       *tview.TextView
+	sessionTable    *tview.Table
 	liveMysqlTable *tview.Table
 	redisInfoView  *tview.TextView
 	redisKeysTable *tview.Table
@@ -261,9 +266,14 @@ func (a *App) buildLayout() {
 			return nil
 
 		case event.Rune() == 'r' || event.Rune() == 'R':
-			// Force re-scan (only on analyzer page).
+			// Analyzer page: force re-scan.
 			if a.currentPage == pageAnalyzer && a.deps.Analyzer != nil {
 				a.deps.Analyzer.ForceAnalyze()
+				return nil
+			}
+			// Live page: reset the session traffic counters.
+			if a.currentPage == pageLive && a.deps.LiveTraffic != nil {
+				a.deps.LiveTraffic.ResetSession()
 				return nil
 			}
 

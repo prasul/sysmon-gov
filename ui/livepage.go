@@ -23,8 +23,18 @@ func (a *App) buildLivePage() tview.Primitive {
 	a.synFloodTable = styledTable()
 	applyBorder(a.synFloodTable.Box, " ⚠ SYN Flood Monitor ", borderSecurity, titleSecurity)
 
-	a.topConnTable = styledTable()
-	applyBorder(a.topConnTable.Box, " ◆ Top Connections ", borderWeb, titleWeb)
+	// Live traffic panels (replace low-signal Top Connections).
+	a.floodTable = styledTable()
+	applyBorder(a.floodTable.Box, " ⚡ Flooding Now ", borderSecurity, titleSecurity)
+
+	a.domainRateTable = styledTable()
+	applyBorder(a.domainRateTable.Box, " ◆ Traffic by Domain ", borderWeb, titleWeb)
+
+	a.codesView = styledTextView(tview.AlignLeft)
+	applyBorder(a.codesView.Box, " ◆ Response Codes ", borderWeb, titleWeb)
+
+	a.sessionTable = styledTable()
+	applyBorder(a.sessionTable.Box, " ◈ Session ", borderData, titleData)
 
 	// NEW: outbound connection monitor (server → remote).
 	a.outboundTable = styledTable()
@@ -55,20 +65,37 @@ func (a *App) buildLivePage() tview.Primitive {
 	// Row 6: live tail                 (flex)
 	// Row 7: footer                    (1)
 	grid := tview.NewGrid().
-		SetRows(1, 4, 10, 9, 10, 9, 0, 1).
+	SetRows(1, 4, 8, 8, 8, 8, 8, 0, 1).
 		SetColumns(0, 0).
 		SetBorders(false)
 
 	grid.AddItem(a.liveHeader, 0, 0, 1, 2, 0, 0, false)
 	grid.AddItem(a.connSummary, 1, 0, 1, 2, 0, 0, false)
-	grid.AddItem(a.synFloodTable, 2, 0, 1, 1, 0, 0, false)
-	grid.AddItem(a.topConnTable, 2, 1, 1, 1, 0, 0, false)
-	grid.AddItem(a.outboundTable, 3, 0, 1, 2, 0, 0, false)  // full width
-	grid.AddItem(a.liveMysqlTable, 4, 0, 1, 2, 0, 0, false) // full width
-	grid.AddItem(a.redisInfoView, 5, 0, 1, 1, 0, 0, false)  // left half
-	grid.AddItem(a.redisKeysTable, 5, 1, 1, 1, 0, 0, false) // right half
-	grid.AddItem(a.liveTailTable, 6, 0, 1, 2, 0, 0, false)
-	grid.AddItem(a.liveFooter, 7, 0, 1, 2, 0, 0, false)
+
+	// Row 2: flooding (hero) | SYN flood
+	grid.AddItem(a.floodTable, 2, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.synFloodTable, 2, 1, 1, 1, 0, 0, false)
+
+	// Row 3: traffic by domain | response codes
+	grid.AddItem(a.domainRateTable, 3, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.codesView, 3, 1, 1, 1, 0, 0, false)
+
+	// Row 4: session | outbound
+	grid.AddItem(a.sessionTable, 4, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.outboundTable, 4, 1, 1, 1, 0, 0, false)
+
+	// Row 5: mysql live (full width)
+	grid.AddItem(a.liveMysqlTable, 5, 0, 1, 2, 0, 0, false)
+
+	// Row 6: redis info | redis keys
+	grid.AddItem(a.redisInfoView, 6, 0, 1, 1, 0, 0, false)
+	grid.AddItem(a.redisKeysTable, 6, 1, 1, 1, 0, 0, false)
+
+	// Row 7: live tail (flex)
+	grid.AddItem(a.liveTailTable, 7, 0, 1, 2, 0, 0, false)
+
+	// Row 8: footer
+	grid.AddItem(a.liveFooter, 8, 0, 1, 2, 0, 0, false)
 
 	return grid
 }
@@ -102,12 +129,22 @@ func (a *App) refreshLive() {
 	if a.deps.LiveTail != nil {
 		liveEntries = a.deps.LiveTail.RecentEntries(maxLiveRows)
 	}
+	
+		// Feed the traffic analyzer (rolling + session stats).
+	var trafficStats metrics.LiveTrafficStats
+	if a.deps.LiveTraffic != nil {
+		a.deps.LiveTraffic.Ingest(liveEntries)
+		trafficStats = a.deps.LiveTraffic.Snapshot()
+	}
 
 	a.tviewApp.QueueUpdateDraw(func() {
 		a.renderLiveHeader(netStats)
 		a.renderConnSummary(netStats)
 		a.renderSynFlood(netStats)
-		a.renderTopConns(netStats)
+		a.renderFlooding(&trafficStats)
+		a.renderDomainRates(&trafficStats)
+		a.renderCodes(&trafficStats)
+		a.renderSessionView(&trafficStats)
 		a.renderOutbound(outStats)
 		a.renderLiveMySQL(mysqlStats)
 		a.renderRedisInfo()

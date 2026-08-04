@@ -144,6 +144,9 @@ func main() {
 	
 	allowlist := metrics.NewAllowlist("/etc/sysmon/allowlist.txt")
 	ui.SetAllowlist(allowlist)
+	
+	// ── Live traffic analyzer (rolling + session) ───────────────
+	liveTraffic := metrics.NewLiveTrafficAnalyzer(allowlist)
 
 	// ── History buffer (for on-demand HTML reports) ─────────────
 	history := metrics.NewHistory(*historyWindowFlag)
@@ -161,6 +164,7 @@ func main() {
 		AccessReader: accessReader,
 		Redis:        redisCollector,
 		Analyzer:     analyzer,
+		LiveTraffic:  liveTraffic, 
 		History:      history,
 		ReportDir:    *reportOutFlag,
 	}
