@@ -179,10 +179,17 @@ func (la *LogAnalyzer) NextRunIn() time.Duration {
 
 // ── Core analysis ───────────────────────────────────────────────────
 
+// analyzeTarget pairs a domain label with the access-log file to read
+// for it. Built differently depending on server layout (see below).
+type analyzeTarget struct {
+	domain  string
+	logFile string
+}
+
 func (la *LogAnalyzer) analyze() {
 	start := time.Now()
 
-	domainDirs, err := filepath.Glob(la.domainsGlob)
+	targets, err := la.resolveTargets()
 	if err != nil {
 		la.finish(nil, start)
 		return
@@ -190,23 +197,15 @@ func (la *LogAnalyzer) analyze() {
 
 	var results []DomainAnalysis
 
-	for _, dir := range domainDirs {
-		fi, err := os.Stat(dir)
-		if err != nil || !fi.IsDir() {
-			continue
-		}
-
-		domain := filepath.Base(dir)
-		logFile := filepath.Join(dir, "log", "access.log")
-
+	for _, t := range targets {
 		// Read the tail as ONE block.  All line "strings" below are
 		// slices into this block — no per-line copies.
-		block := readTailBlock(logFile)
+		block := readTailBlock(t.logFile)
 		if block == "" {
 			continue
 		}
 
-		da := la.analyzeDomain(domain, block)
+		da := la.analyzeDomain(t.domain, block)
 		results = append(results, da)
 		// block + count maps become garbage here; GC reclaims
 		// before the next domain is read.
@@ -221,6 +220,60 @@ func (la *LogAnalyzer) analyze() {
 	})
 
 	la.finish(results, start)
+}
+
+// resolveTargets discovers (domain, access-log-file) pairs according
+// to the configured server layout:
+//
+//   - LEMP: la.domainsGlob matches domain DIRECTORIES; the access log
+//     lives at <dir>/log/access.log.
+//   - Apache/cPanel: la.domainsGlob matches LOG FILES directly (main.go
+//     points it at the same domlogs glob used by the other collectors
+//     in this mode). Non-access-log files are skipped. The -ssl_log
+//     file is kept as its own target rather than merged into its HTTP
+//     counterpart — unlike the accumulating collectors (NginxCollector
+//     et al.), this analyzer produces one independent report per file,
+//     so merging would mean reading and interleaving two separate
+//     4MB tail blocks. It's labeled "domain.com [ssl]" so it isn't
+//     mistaken for a duplicate.
+func (la *LogAnalyzer) resolveTargets() ([]analyzeTarget, error) {
+	matches, err := filepath.Glob(la.domainsGlob)
+	if err != nil {
+		return nil, err
+	}
+
+	var targets []analyzeTarget
+
+	if currentServerMode == ServerApache {
+		for _, path := range matches {
+			base := filepath.Base(path)
+			if isIgnorableApacheLog(base) {
+				continue
+			}
+			fi, err := os.Stat(path)
+			if err != nil || fi.IsDir() {
+				continue
+			}
+			domain := base
+			if strings.HasSuffix(base, "-ssl_log") {
+				domain = strings.TrimSuffix(base, "-ssl_log") + " [ssl]"
+			}
+			targets = append(targets, analyzeTarget{domain: domain, logFile: path})
+		}
+		return targets, nil
+	}
+
+	for _, dir := range matches {
+		fi, err := os.Stat(dir)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		targets = append(targets, analyzeTarget{
+			domain:  filepath.Base(dir),
+			logFile: filepath.Join(dir, "log", "access.log"),
+		})
+	}
+	return targets, nil
 }
 
 func (la *LogAnalyzer) finish(results []DomainAnalysis, start time.Time) {

@@ -26,6 +26,10 @@ func main() {
 	intervalFlag := flag.String("interval", "2s",
 		"Dashboard refresh interval (e.g. 2s, 500ms, 1m)")
 
+	serverFlag := flag.String("server", "lemp",
+		"Server/log layout: \"lemp\" (nginx, one dir per domain — default) "+
+			"or \"apache\" (cPanel/WHM flat domlogs directory)")
+
 	domainsFlag := flag.String("domains",
 		"/home/nginx/domains/*",
 		"Glob for domain directories (used by file scanner)")
@@ -74,6 +78,41 @@ func main() {
 
 	flag.Parse()
 
+	// ── Server layout ───────────────────────────────────────────
+	// Track which flags the user set explicitly so apache-mode
+	// defaults below only kick in for flags left untouched.
+	explicitFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
+
+	metrics.SetServerMode(*serverFlag)
+
+	if metrics.IsApacheMode() {
+		if !explicitFlags["logpath"] {
+			*logPathFlag = "/usr/local/apache/logs/domlogs/*"
+		}
+		if !explicitFlags["errorlog"] {
+			// cPanel/Apache normally logs all vhosts to one shared
+			// error log rather than per-domain files.
+			*errorLogFlag = "/usr/local/apache/logs/error_log"
+		}
+		if !explicitFlags["domains"] {
+			// Best-effort cPanel account layout (one domain per
+			// account, docroot at ~/public_html). Override with
+			// -domains if yours differs (addon/parked domains,
+			// reseller layouts, etc.) — this only affects the
+			// WordPress file-change scanner, not overload detection.
+			*domainsFlag = "/home/*/public_html"
+		}
+		fmt.Fprintf(os.Stderr,
+			"sysmon: apache/cPanel mode — logpath=%s errorlog=%s domains=%s\n",
+			*logPathFlag, *errorLogFlag, *domainsFlag)
+		fmt.Fprintln(os.Stderr,
+			"sysmon: note — error-log parsing, PHP-FPM slow log, and the "+
+				"file-change scanner are tuned for LEMP paths and may not "+
+				"produce results on Apache/cPanel unless you override "+
+				"-errorlog/-slowlog/-domains for your box's actual layout")
+	}
+
 	// ── Validate interval ───────────────────────────────────────
 	interval, err := time.ParseDuration(*intervalFlag)
 	if err != nil {
@@ -101,7 +140,15 @@ func main() {
 	wpFiles := metrics.NewWPFileCollector(*domainsFlag, fileWindow)
 	ngxErrors := metrics.NewNginxErrorCollector(*errorLogFlag)
 	liveTail := metrics.NewLiveTailer(*logPathFlag, *errorLogFlag, *liveBufferFlag)
-	analyzer := metrics.NewLogAnalyzer(*domainsFlag)
+
+	// LogAnalyzer needs a glob that resolves to individual access-log
+	// FILES in apache mode (domlogs is flat), but to per-domain
+	// DIRECTORIES in lemp mode — those are two different flags.
+	analyzerGlob := *domainsFlag
+	if metrics.IsApacheMode() {
+		analyzerGlob = *logPathFlag
+	}
+	analyzer := metrics.NewLogAnalyzer(analyzerGlob)
 
 	// ── Shared log reader (CPU optimization) ────────────────────
 	// Reads each access log file ONCE per tick, dispatches parsed

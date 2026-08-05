@@ -233,11 +233,27 @@ func (c *NginxCollector) readNewLines(logPath string) []string {
 	return lines
 }
 
-// extractDomain pulls the domain name from a log file path.
-// Given "/home/nginx/domains/example.com/log/access.log" it returns
-// "example.com".  It looks for the "domains" path component and takes
-// the next segment.
+// extractDomain resolves the domain name for a log file path, using
+// whichever layout SetServerMode configured:
+//
+//   - LEMP (default): domain is a path segment, e.g.
+//     "/home/nginx/domains/example.com/log/access.log" → "example.com".
+//   - Apache/cPanel: domain is the filename itself inside a flat
+//     domlogs directory, e.g. "example.com" or "example.com-ssl_log"
+//     → "example.com" (the -ssl_log suffix is stripped so HTTP and
+//     HTTPS hits for the same site accumulate under one domain).
+//     Non-access-log files that live alongside it (-bytes_log,
+//     -ftp_log, .gz archives) return "" so every call site's existing
+//     `if domain == "" { continue }` guard skips them automatically.
 func extractDomain(logPath string) string {
+	if currentServerMode == ServerApache {
+		base := filepath.Base(logPath)
+		if isIgnorableApacheLog(base) {
+			return ""
+		}
+		return strings.TrimSuffix(base, "-ssl_log")
+	}
+
 	parts := strings.Split(filepath.ToSlash(logPath), "/")
 	for i, p := range parts {
 		if p == "domains" && i+1 < len(parts) {
